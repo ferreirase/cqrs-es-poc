@@ -1,0 +1,35 @@
+module.exports = [
+  {
+    ignores: ['**/dist'],
+  },
+  {
+    files: [
+      '**/*.ts',
+      '**/*.tsx',
+      '**/*.js',
+      '**/*.jsx',
+      '**/*.cjs',
+      '**/*.mjs',
+    ],
+    rules: {
+      '@typescript-eslint/no-unsafe-function-type': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-empty-object-type': 'off',
+      '@typescript-eslint/no-empty-function': 'off',
+      '@typescript-eslint/no-unused-expressions': 'off',
+      'prefer-const': 'off',
+      'no-var': 'off',
+      'no-empty': 'off',
+      'no-prototype-builtins': 'off',
+      'no-cond-assign': 'off',
+      'prefer-spread': 'off',
+      'prefer-rest-params': 'off',
+      '@typescript-eslint/no-this-alias': 'off',
+      'no-useless-escape': 'off',
+      'no-unused-private-class-members': 'off',
+      'no-case-declarations': 'off',
+      'no-self-assign': 'off',
+    },
+  },
+];
