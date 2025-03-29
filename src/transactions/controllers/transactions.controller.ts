@@ -10,6 +10,7 @@ import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { CreateTransactionCommand } from '../commands/impl/create-transaction.command';
 import { TransactionType } from '../models/transaction.entity';
 import { GetAccountTransactionsQuery } from '../queries/impl/get-account-transactions.query';
+import { GetAllTransactionsQuery } from '../queries/impl/get-all-transactions.query';
 import { GetTransactionQuery } from '../queries/impl/get-transaction.query';
 
 class CreateTransactionDto {
@@ -58,5 +59,10 @@ export class TransactionsController {
   @Get('account/:accountId')
   async getAccountTransactions(@Param('accountId') accountId: string) {
     return this.queryBus.execute(new GetAccountTransactionsQuery(accountId));
+  }
+
+  @Get('')
+  async getAllTransactions() {
+    return await this.queryBus.execute(new GetAllTransactionsQuery());
   }
 }

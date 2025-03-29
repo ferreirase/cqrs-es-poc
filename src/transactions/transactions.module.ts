@@ -20,10 +20,16 @@ import { ProcessTransactionHandler } from './commands/handlers/process-transacti
 import { TransactionCreatedHandler } from './events/handlers/transaction-created.handler';
 import { TransactionProcessedHandler } from './events/handlers/transaction-processed.handler';
 import { GetAccountTransactionsHandler } from './queries/handlers/get-account-transactions.handler';
+import { GetAllTransactionsHandler } from './queries/handlers/get-all-transactions.handler';
 import { GetTransactionHandler } from './queries/handlers/get-transaction.handler';
+
 const CommandHandlers = [CreateTransactionHandler];
 const EventHandlers = [TransactionCreatedHandler, TransactionProcessedHandler];
-const QueryHandlers = [GetTransactionHandler, GetAccountTransactionsHandler];
+const QueryHandlers = [
+  GetTransactionHandler,
+  GetAccountTransactionsHandler,
+  GetAllTransactionsHandler,
+];
 
 @Module({
   imports: [

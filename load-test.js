@@ -10,7 +10,7 @@ export const options = {
   ],
 };
 
-const BASE_URL = 'http://localhost:3000'; // Ajuste conforme sua configuração
+const BASE_URL = 'http://localhost:3001'; // Ajuste conforme sua configuração
 
 // Função auxiliar para gerar ID único
 function generateId() {
