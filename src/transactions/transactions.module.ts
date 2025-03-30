@@ -5,7 +5,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { EventStoreService } from '../common/events/event-store.service';
 import { EventEntity } from '../common/events/event.entity';
-import { RabbitMqModule } from '../common/messaging/rabbitmq.module';
+import { RabbitMQModule } from '../common/messaging/rabbitmq.module';
+import { MonitoringModule } from '../common/monitoring/monitoring.module';
 import { TransactionsController } from './controllers/transactions.controller';
 import { TransactionEntity } from './models/transaction.entity';
 import {
@@ -34,7 +35,8 @@ const QueryHandlers = [
 @Module({
   imports: [
     CqrsModule,
-    RabbitMqModule,
+    RabbitMQModule,
+    MonitoringModule,
     TypeOrmModule.forFeature([TransactionEntity, EventEntity]),
     MongooseModule.forFeature([
       { name: TransactionDocument.name, schema: TransactionSchema },

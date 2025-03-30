@@ -2,30 +2,116 @@ services:
   postgres:
     image: postgres:14
     ports:
-      - "5432:5432"
+      - '5432:5432'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: transaction_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - app-network
 
   mongodb:
     image: mongo:latest
     ports:
-      - "27017:27017"
+      - '27017:27017'
     volumes:
       - mongodb_data:/data/db
+    restart: unless-stopped
+    networks:
+      - app-network
 
   rabbitmq:
     image: rabbitmq:3-management
     ports:
-      - "5672:5672"  # AMQP port
-      - "15672:15672"  # Management UI port
+      - '5672:5672' # AMQP port
+      - '15672:15672' # Management UI port
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Prometheus - Para métricas
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./config/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    networks:
+      - app-network
+
+  # Loki - Para logs
+  loki:
+    image: grafana/loki:2.8.0
+    ports:
+      - '3100:3100'
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./config/loki/local-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # FluentBit - Para coleta de logs
+  fluentbit:
+    image: fluent/fluent-bit:latest
+    ports:
+      - '24224:24224'
+      - '24224:24224/udp'
+      - '2020:2020'
+    volumes:
+      - ./config/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./logs:/var/log
+    environment:
+      LOKI_HOST: loki
+      LOKI_PORT: 3100
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Grafana - Para visualização de métricas e logs
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - '3300:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+    networks:
+      - app-network
 
 volumes:
   postgres_data:
-  mongodb_data: 
+  mongodb_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

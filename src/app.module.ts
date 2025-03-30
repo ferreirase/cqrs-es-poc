@@ -7,6 +7,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
 import { RabbitMQService } from './common/messaging/rabbitmq.service';
+import { MonitoringModule } from './common/monitoring/monitoring.module';
 import { SyncModule } from './common/sync/sync.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import {
@@ -69,6 +70,7 @@ import {
     AccountsModule,
     TransactionsModule,
     SyncModule,
+    MonitoringModule,
   ],
   providers: [RabbitMQService],
 })

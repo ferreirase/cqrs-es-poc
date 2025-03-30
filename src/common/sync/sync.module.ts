@@ -12,7 +12,7 @@ import {
   TransactionDocument,
   TransactionSchema,
 } from '../../transactions/models/transaction.schema';
-import { RabbitMqModule } from '../messaging/rabbitmq.module';
+import { RabbitMQModule } from '../messaging/rabbitmq.module';
 import { SyncController } from './sync.controller';
 import { DataSyncService } from './sync.service';
 
@@ -23,7 +23,7 @@ import { DataSyncService } from './sync.service';
       { name: AccountDocument.name, schema: AccountSchema },
       { name: TransactionDocument.name, schema: TransactionSchema },
     ]),
-    RabbitMqModule,
+    RabbitMQModule,
   ],
   controllers: [SyncController],
   providers: [DataSyncService, AmqpConnection],
