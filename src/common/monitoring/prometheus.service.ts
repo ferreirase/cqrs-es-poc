@@ -169,16 +169,17 @@ export class PrometheusService {
     help: string,
     labelNames: string[],
   ): client.Counter<string> {
-    if (!this.counters.has(name)) {
+    const fullName = `app_${name}`;
+    if (!this.counters.has(fullName)) {
       const counter = new client.Counter({
-        name,
+        name: fullName,
         help,
         labelNames,
         registers: [this.registry],
       });
-      this.counters.set(name, counter);
+      this.counters.set(fullName, counter);
     }
-    return this.counters.get(name);
+    return this.counters.get(fullName);
   }
 
   public createHistogram(
@@ -190,17 +191,18 @@ export class PrometheusService {
       'name' | 'help' | 'labelNames' | 'registers'
     >,
   ): client.Histogram<string> {
-    if (!this.histograms.has(name)) {
+    const fullName = `app_${name}`;
+    if (!this.histograms.has(fullName)) {
       const histogram = new client.Histogram({
-        name,
+        name: fullName,
         help,
         labelNames,
         ...options,
         registers: [this.registry],
       });
-      this.histograms.set(name, histogram);
+      this.histograms.set(fullName, histogram);
     }
-    return this.histograms.get(name);
+    return this.histograms.get(fullName);
   }
 
   public createGauge(
@@ -208,35 +210,39 @@ export class PrometheusService {
     help: string,
     labelNames: string[],
   ): client.Gauge<string> {
-    if (!this.gauges.has(name)) {
+    const fullName = `app_${name}`;
+    if (!this.gauges.has(fullName)) {
       const gauge = new client.Gauge({
-        name,
+        name: fullName,
         help,
         labelNames,
         registers: [this.registry],
       });
-      this.gauges.set(name, gauge);
+      this.gauges.set(fullName, gauge);
     }
-    return this.gauges.get(name);
+    return this.gauges.get(fullName);
   }
 
   public getCounter(name: string): client.Counter<string> {
-    return this.counters.get(name);
+    const fullName = `app_${name}`;
+    return this.counters.get(fullName);
   }
 
   public getHistogram(name: string): client.Histogram<string> {
-    return this.histograms.get(name);
+    const fullName = `app_${name}`;
+    return this.histograms.get(fullName);
   }
 
   public getGauge(name: string): client.Gauge<string> {
-    if (!this.gauges.has(name)) {
+    const fullName = `app_${name}`;
+    if (!this.gauges.has(fullName)) {
       console.warn(
-        `Gauge '${name}' não encontrado. Registrando automaticamente.`,
+        `Gauge '${fullName}' não encontrado. Registrando automaticamente.`,
       );
       // Cria um gauge padrão para evitar erros
       this.createGauge(name, `Auto-registered gauge for ${name}`, []);
     }
-    return this.gauges.get(name);
+    return this.gauges.get(fullName);
   }
 
   public async getMetrics(): Promise<string> {

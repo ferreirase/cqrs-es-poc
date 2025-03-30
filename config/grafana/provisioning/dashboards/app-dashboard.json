@@ -365,14 +365,9 @@
       "id": 202,
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(app_command_duration_seconds_bucket[5m])) by (command, le))",
-          "legendFormat": "{{command}} (95p)",
+          "expr": "rate(app_command_duration_seconds_sum[5m]) / rate(app_command_duration_seconds_count[5m])",
+          "legendFormat": "{{command}}",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(app_command_duration_seconds_bucket[5m])) by (command, le))",
-          "legendFormat": "{{command}} (50p)",
-          "refId": "B"
         }
       ],
       "options": {
@@ -445,7 +440,7 @@
       "id": 203,
       "targets": [
         {
-          "expr": "{app=\"cqrs-es-poc\"} | json | commandType=\"command\" | line_format \"{{.commandName}} - Args: {{.args}} - Duration: {{.duration}}s - Output: {{.output}}\"",
+          "expr": "{app=\"cqrs-es-poc\"} | json | handlerType=\"command\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
           "refId": "A"
         }
       ],
@@ -598,14 +593,9 @@
       "id": 302,
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(app_query_duration_seconds_bucket[5m])) by (query, le))",
-          "legendFormat": "{{query}} (95p)",
+          "expr": "rate(app_query_duration_seconds_sum[5m]) / rate(app_query_duration_seconds_count[5m])",
+          "legendFormat": "{{query}}",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(app_query_duration_seconds_bucket[5m])) by (query, le))",
-          "legendFormat": "{{query}} (50p)",
-          "refId": "B"
         }
       ],
       "options": {
@@ -678,7 +668,7 @@
       "id": 303,
       "targets": [
         {
-          "expr": "{app=\"cqrs-es-poc\"} | json | queryType=\"query\" | line_format \"{{.queryName}} - Args: {{.args}} - Duration: {{.duration}}s - Result: {{.result}}\"",
+          "expr": "{app=\"cqrs-es-poc\"} | json | handlerType=\"query\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
           "refId": "A"
         }
       ],
