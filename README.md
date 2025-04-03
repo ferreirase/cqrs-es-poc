@@ -150,52 +150,7 @@ A arquitetura escolhida proporciona alta escalabilidade, resiliência e rastreab
 
 ## 🏛️ Arquitetura do Sistema
 
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'arial', 'primaryTextColor': '#000000' }}}%%
-flowchart TB
-    Client[Cliente] --> API[API REST]
-
-    subgraph "CQRS + Event Sourcing"
-        API -- "1. Comandos" --> Commands[Commands]
-        API -- "2. Consultas" --> Queries[Queries]
-
-        Commands --> CommandHandlers[Command Handlers]
-        CommandHandlers -- "3. Gera" --> Events[Events]
-        Events -- "4. Armazena" --> EventStore[(PostgreSQL Event Store)]
-        Events -- "5. Dispara" --> EventHandlers[Event Handlers]
-
-        EventHandlers -- "6. Atualiza" --> ReadModel[(MongoDB Read Model)]
-        Queries --> QueryHandlers[Query Handlers]
-        QueryHandlers -- "7. Consulta" --> ReadModel
-    end
-
-    subgraph "Mensageria"
-        EventHandlers -- "8. Publica" --> RabbitMQ[RabbitMQ]
-        RabbitMQ --> ExternalServices[Serviços Externos]
-    end
-
-    subgraph "Agendamento"
-        Scheduler[Transaction Scheduler] --> Commands
-    end
-
-    subgraph "Monitoramento"
-        API --> PrometheusMetrics[Prometheus]
-        API --> Logs[Fluent Bit]
-        PrometheusMetrics --> Grafana[Grafana Dashboards]
-        Logs --> Loki[Loki]
-        Loki --> Grafana
-    end
-
-    classDef domain fill:#f9f,stroke:#333,stroke-width:2px,color:black
-    classDef storage fill:#bbf,stroke:#333,stroke-width:2px,color:black
-    classDef monitoring fill:#bfb,stroke:#333,stroke-width:2px,color:black
-    classDef external fill:#fbb,stroke:#333,stroke-width:2px,color:black
-
-    class Client,API,Commands,Queries,CommandHandlers,QueryHandlers,Events,EventHandlers,Scheduler domain
-    class EventStore,ReadModel,RabbitMQ storage
-    class PrometheusMetrics,Logs,Grafana,Loki monitoring
-    class ExternalServices external
-```
+![alt text](mermaid.png)
 
 ## 📁 Estrutura do Projeto
 
