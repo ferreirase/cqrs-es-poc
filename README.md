@@ -151,6 +151,7 @@ A arquitetura escolhida proporciona alta escalabilidade, resiliência e rastreab
 ## 🏛️ Arquitetura do Sistema
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'arial', 'primaryTextColor': '#000000' }}}%%
 flowchart TB
     Client[Cliente] --> API[API REST]
 
@@ -185,10 +186,10 @@ flowchart TB
         Loki --> Grafana
     end
 
-    classDef domain fill:#f9f,stroke:#333,stroke-width:2px
-    classDef storage fill:#bbf,stroke:#333,stroke-width:2px
-    classDef monitoring fill:#bfb,stroke:#333,stroke-width:2px
-    classDef external fill:#fbb,stroke:#333,stroke-width:2px
+    classDef domain fill:#f9f,stroke:#333,stroke-width:2px,color:black
+    classDef storage fill:#bbf,stroke:#333,stroke-width:2px,color:black
+    classDef monitoring fill:#bfb,stroke:#333,stroke-width:2px,color:black
+    classDef external fill:#fbb,stroke:#333,stroke-width:2px,color:black
 
     class Client,API,Commands,Queries,CommandHandlers,QueryHandlers,Events,EventHandlers,Scheduler domain
     class EventStore,ReadModel,RabbitMQ storage
