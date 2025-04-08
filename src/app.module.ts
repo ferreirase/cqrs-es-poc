@@ -10,6 +10,7 @@ import { RabbitMQService } from './common/messaging/rabbitmq.service';
 import { MonitoringModule } from './common/monitoring/monitoring.module';
 import { SyncModule } from './common/sync/sync.module';
 import { TransactionsModule } from './transactions/transactions.module';
+import { UsersModule } from './users/users.module';
 import {
   getMongoUri,
   getNodeEnv,
@@ -69,6 +70,7 @@ import {
     CqrsModule,
     AccountsModule,
     TransactionsModule,
+    UsersModule,
     SyncModule,
     MonitoringModule,
   ],
