@@ -14,4 +14,4 @@ export class GetAccountsHandler implements IQueryHandler<GetAccountsQuery> {
   async execute() {
     return this.accountModel.find().exec();
   }
-} 
+}

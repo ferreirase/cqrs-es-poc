@@ -10,6 +10,12 @@ export enum TransactionStatus {
   PENDING = 'pending',
   COMPLETED = 'completed',
   FAILED = 'failed',
+  CANCELLED = 'cancelled',
+  PROCESSED = 'processed',
+  INITIATED = 'initiated',
+  RESERVED = 'reserved',
+  CONFIRMED = 'confirmed',
+  CANCELED = 'canceled',
 }
 
 @Entity('transactions')
@@ -44,6 +50,9 @@ export class TransactionEntity {
 
   @Column()
   createdAt: Date;
+
+  @Column({ nullable: true })
+  updatedAt: Date;
 
   @Column({ nullable: true })
   processedAt: Date;

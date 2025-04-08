@@ -16,4 +16,4 @@ export class AccountEntity {
 
   @Column({ nullable: true })
   updatedAt: Date;
-} 
+}

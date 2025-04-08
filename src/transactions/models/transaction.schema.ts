@@ -11,6 +11,12 @@ export enum TransactionStatus {
   PENDING = 'pending',
   COMPLETED = 'completed',
   FAILED = 'failed',
+  CANCELLED = 'cancelled',
+  PROCESSED = 'processed',
+  INITIATED = 'initiated',
+  RESERVED = 'reserved',
+  CONFIRMED = 'confirmed',
+  CANCELED = 'canceled',
 }
 
 @Schema({

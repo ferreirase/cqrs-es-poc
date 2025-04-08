@@ -1,1 +1,1 @@
-export class GetAccountsQuery {} 
+export class GetAccountsQuery {}

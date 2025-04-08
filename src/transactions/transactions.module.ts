@@ -15,29 +15,39 @@ import {
 } from './models/transaction.schema';
 
 import { AccountsModule } from '../accounts/accounts.module';
+import { AccountEntity } from '../accounts/models/account.entity';
 import { TransactionSchedulerService } from '../transactions/services/transaction-scheduler.service';
+import { UserEntity } from '../users/models/user.entity';
 import { CreateTransactionHandler } from './commands/handlers/create-transaction.handler';
-import { ProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
+import { ProcessTransactionHandler as ExistingProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
+import { SagaCommandHandlers } from './commands/handlers/saga-handlers.index';
 import { TransactionCreatedHandler } from './events/handlers/transaction-created.handler';
 import { TransactionProcessedHandler } from './events/handlers/transaction-processed.handler';
 import { GetAccountTransactionsHandler } from './queries/handlers/get-account-transactions.handler';
 import { GetAllTransactionsHandler } from './queries/handlers/get-all-transactions.handler';
 import { GetTransactionHandler } from './queries/handlers/get-transaction.handler';
+import { WithdrawalSaga } from './sagas/withdrawal.saga';
 
-const CommandHandlers = [CreateTransactionHandler];
+const CommandHandlers = [CreateTransactionHandler, ...SagaCommandHandlers];
 const EventHandlers = [TransactionCreatedHandler, TransactionProcessedHandler];
 const QueryHandlers = [
   GetTransactionHandler,
   GetAccountTransactionsHandler,
   GetAllTransactionsHandler,
 ];
+const Sagas = [WithdrawalSaga];
 
 @Module({
   imports: [
     CqrsModule,
     RabbitMQModule,
     MonitoringModule,
-    TypeOrmModule.forFeature([TransactionEntity, EventEntity]),
+    TypeOrmModule.forFeature([
+      TransactionEntity,
+      EventEntity,
+      UserEntity,
+      AccountEntity,
+    ]),
     MongooseModule.forFeature([
       { name: TransactionDocument.name, schema: TransactionSchema },
     ]),
@@ -47,11 +57,11 @@ const QueryHandlers = [
   providers: [
     EventStoreService,
     TransactionSchedulerService,
-    CreateTransactionHandler,
-    ProcessTransactionHandler,
+    ExistingProcessTransactionHandler,
     ...EventHandlers,
     ...QueryHandlers,
     ...CommandHandlers,
+    ...Sagas,
   ],
 })
 export class TransactionsModule {}
