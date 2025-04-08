@@ -19,10 +19,14 @@ import {
   NotificationStatus,
   NotificationType,
 } from '../models/notification.enum';
+import { TransactionContextService } from '../services/transaction-context.service';
 
 @Injectable()
 export class WithdrawalSaga {
-  constructor(private readonly loggingService: LoggingService) {}
+  constructor(
+    private readonly loggingService: LoggingService,
+    private readonly transactionContext: TransactionContextService,
+  ) {}
 
   @Saga()
   balanceChecked = (events$: Observable<any>): Observable<ICommand> => {
@@ -65,7 +69,7 @@ export class WithdrawalSaga {
   balanceReserved = (events$: Observable<any>): Observable<ICommand> => {
     return events$.pipe(
       ofType(BalanceReservedEvent),
-      mergeMap(event => {
+      mergeMap(async event => {
         this.loggingService.info(
           `[WithdrawalSaga] Balance reserved event received: ${JSON.stringify(
             event,
@@ -80,13 +84,28 @@ export class WithdrawalSaga {
           return of();
         }
 
-        // Buscar informações da transação para prosseguir
-        // Na implementação real, isso pode vir de um serviço ou repositório
-        // Aqui vamos simular com valores fixos
+        // Carregar informações da transação a partir do banco de dados
+        await this.transactionContext.loadTransactionDetails(
+          event.transactionId,
+        );
+
+        // Obter informações do contexto
+        const context = this.transactionContext.getTransactionContext(
+          event.transactionId,
+        );
+
+        // Usar os dados do contexto ou valores padrão se não estiverem disponíveis
         const sourceAccountId = event.accountId;
-        const destinationAccountId = 'destination-account-id'; // Deve ser recuperado do contexto
+        const destinationAccountId = context.destinationAccountId;
         const amount = event.amount;
-        const description = 'Withdrawal operation'; // Deve ser recuperado do contexto
+        const description = context.description || 'Withdrawal operation';
+
+        if (!destinationAccountId) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Missing destination account for transaction ${event.transactionId}`,
+          );
+          return of();
+        }
 
         // Prossegue para processar a transação
         return of(
@@ -205,7 +224,7 @@ export class WithdrawalSaga {
     return events$.pipe(
       ofType(StatementUpdatedEvent),
       map(event => event as StatementUpdatedEvent),
-      mergeMap(event => {
+      mergeMap(async event => {
         if (event.type === 'DEBIT') {
           this.loggingService.info(
             `[WithdrawalSaga] Source statement updated event received: ${JSON.stringify(
@@ -221,8 +240,35 @@ export class WithdrawalSaga {
             // Podemos tentar novamente ou seguir em frente, pois o balanço já foi atualizado
           }
 
-          // Recuperar informações da transação do contexto ou serviço
-          const destinationAccountId = 'destination-account-id'; // Deve vir do contexto
+          // Obter informações do contexto
+          const context = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+
+          // Se não temos o contexto ainda, tentar carregá-lo
+          if (!context || !context.destinationAccountId) {
+            await this.transactionContext.loadTransactionDetails(
+              event.transactionId,
+            );
+            // Recarregar o contexto após loadTransactionDetails
+            const updatedContext =
+              this.transactionContext.getTransactionContext(
+                event.transactionId,
+              );
+
+            if (!updatedContext || !updatedContext.destinationAccountId) {
+              this.loggingService.error(
+                `[WithdrawalSaga] Missing destination account for transaction ${event.transactionId}`,
+              );
+              return of();
+            }
+          }
+
+          // Recarregar o contexto após possível atualização
+          const finalContext = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+          const destinationAccountId = finalContext.destinationAccountId;
 
           // Atualiza o extrato da conta de destino (crédito)
           return of(
@@ -253,7 +299,7 @@ export class WithdrawalSaga {
     return events$.pipe(
       ofType(StatementUpdatedEvent),
       map(event => event as StatementUpdatedEvent),
-      mergeMap(event => {
+      mergeMap(async event => {
         if (event.type === 'CREDIT') {
           this.loggingService.info(
             `[WithdrawalSaga] Destination statement updated event received: ${JSON.stringify(
@@ -269,9 +315,34 @@ export class WithdrawalSaga {
             // Podemos tentar novamente ou seguir em frente
           }
 
-          // Recuperar informações dos usuários associados às contas
-          // Normalmente isso viria de um serviço/repositório
-          const sourceUserId = 'source-user-id'; // Deve vir do contexto
+          // Obter informações do contexto
+          const context = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+
+          // Se não temos o contexto ainda, tentar carregá-lo
+          if (!context || !context.sourceUserId) {
+            await this.transactionContext.loadTransactionDetails(
+              event.transactionId,
+            );
+            await this.transactionContext.loadAccountUserDetails(
+              event.transactionId,
+            );
+          }
+
+          // Recarregar o contexto após possível atualização
+          const finalContext = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+          const sourceUserId = finalContext.sourceUserId;
+
+          if (!sourceUserId) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Missing source user ID for transaction ${event.transactionId}`,
+            );
+            // Fallback para um valor padrão em caso de erro
+            return of();
+          }
 
           // Notificar o usuário de origem sobre o débito
           return of(
@@ -301,7 +372,7 @@ export class WithdrawalSaga {
     return events$.pipe(
       ofType(UserNotifiedEvent),
       map(event => event as UserNotifiedEvent),
-      mergeMap(event => {
+      mergeMap(async event => {
         if (event.type === NotificationType.WITHDRAWAL) {
           this.loggingService.info(
             `[WithdrawalSaga] Source user notified event received: ${JSON.stringify(
@@ -316,10 +387,38 @@ export class WithdrawalSaga {
             // Falha não crítica, podemos tentar novamente ou seguir em frente
           }
 
-          // Recuperar informações dos usuários associados às contas
-          // Normalmente isso viria de um serviço/repositório
-          const destinationUserId = 'destination-user-id'; // Deve vir do contexto
-          const destinationAccountId = 'destination-account-id'; // Deve vir do contexto
+          // Obter informações do contexto
+          const context = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+
+          // Se não temos o contexto ainda, tentar carregá-lo
+          if (
+            !context ||
+            !context.destinationUserId ||
+            !context.destinationAccountId
+          ) {
+            await this.transactionContext.loadTransactionDetails(
+              event.transactionId,
+            );
+            await this.transactionContext.loadAccountUserDetails(
+              event.transactionId,
+            );
+          }
+
+          // Recarregar o contexto após possível atualização
+          const finalContext = this.transactionContext.getTransactionContext(
+            event.transactionId,
+          );
+          const destinationUserId = finalContext.destinationUserId;
+          const destinationAccountId = finalContext.destinationAccountId;
+
+          if (!destinationUserId || !destinationAccountId) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Missing destination user or account for transaction ${event.transactionId}`,
+            );
+            return of();
+          }
 
           // Notificar o usuário de destino sobre o crédito
           return of(
@@ -386,7 +485,7 @@ export class WithdrawalSaga {
   balanceReleased = (events$: Observable<any>): Observable<ICommand> => {
     return events$.pipe(
       ofType(BalanceReleasedEvent),
-      mergeMap(event => {
+      mergeMap(async event => {
         this.loggingService.info(
           `[WithdrawalSaga] Balance released event received: ${JSON.stringify(
             event,
@@ -406,8 +505,35 @@ export class WithdrawalSaga {
           // A compensação foi bem-sucedida, o fluxo foi revertido
         }
 
-        // Recuperar informações de usuário para notificar sobre a falha
-        const userId = 'source-user-id'; // Deve vir do contexto
+        // Obter informações do contexto
+        const context = this.transactionContext.getTransactionContext(
+          event.transactionId,
+        );
+
+        // Se não temos o contexto ainda, tentar carregá-lo
+        if (!context || !context.sourceUserId) {
+          await this.transactionContext.loadTransactionDetails(
+            event.transactionId,
+          );
+          await this.transactionContext.loadAccountUserDetails(
+            event.transactionId,
+          );
+        }
+
+        // Recarregar o contexto após possível atualização
+        const finalContext = this.transactionContext.getTransactionContext(
+          event.transactionId,
+        );
+        const userId = finalContext.sourceUserId;
+
+        if (!userId) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Missing source user ID for transaction ${event.transactionId}`,
+          );
+          // Se não conseguirmos obter o ID do usuário, vamos notificar um admin ou algum user padrão
+          // Aqui poderíamos usar um ID de administrador ou outro mecanismo de fallback
+          return of();
+        }
 
         // Notificar usuário sobre a falha na transação
         return of(
