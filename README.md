@@ -207,14 +207,14 @@ Se qualquer etapa falhar, a saga executa operações de compensação para desfa
 3. ❌ **Falha na Atualização do Extrato**: Registra a falha, mas mantém a transação confirmada
 4. ❌ **Falha na Notificação**: Registra a falha para tentativa posterior
 
-### 📦 Contexto de Transação
+### 📦 Gerenciamento de Contexto via Mensageria
 
-Para manter a consistência e evitar hardcoding de informações, implementamos um `TransactionContextService` que:
+Com a migração para filas RabbitMQ, o gerenciamento do contexto entre as etapas da saga não depende mais de um serviço centralizado (`TransactionContextService`). Em vez disso:
 
-1. 🗃️ Armazena informações relevantes da transação durante todo o fluxo da saga
-2. 🔄 Carrega dados dinamicamente quando necessário (lazy loading)
-3. 🌐 Mantém o contexto consistente entre as diferentes etapas da saga
-4. 🔒 Garante a disponibilidade das informações mesmo em caso de falhas parciais
+1. 📨 **Eventos e Comandos Contêm Contexto**: Cada evento ou comando publicado no RabbitMQ carrega os dados necessários para a próxima etapa do fluxo.
+2. ➡️ **Fluxo Orientado a Mensagens**: A saga reage aos eventos consumidos do RabbitMQ. As informações necessárias (como `transactionId`, `accountId`, `amount`, etc.) são extraídas diretamente da mensagem recebida.
+3. 🧩 **Estado Distribuído**: O estado relevante para cada etapa é passado adiante através das mensagens, garantindo que cada serviço/handler tenha as informações de que precisa para executar sua tarefa.
+4. ✅ **Consistência Mantida pela Saga**: A lógica da `WithdrawalSaga` orquestra o fluxo, decidindo qual comando publicar em seguida com base nos eventos recebidos e no contexto extraído das mensagens.
 
 ### 🧰 Padronização de Status
 
@@ -308,11 +308,11 @@ graph TB
         AccountsModule[Accounts Module]
         TransactionsModule[Transactions Module]
         UsersModule[Users Module]
+        Domain[Domain Logic]
     end
 
     subgraph "Saga Orchestration"
         WithdrawalSaga[Withdrawal Saga]
-        TransactionContext[Transaction Context Service]
     end
 
     subgraph "Data Storage"
@@ -342,7 +342,6 @@ graph TB
     Events -->|Store| EventStore
 
     Events -->|Trigger| WithdrawalSaga
-    WithdrawalSaga -->|Use| TransactionContext
     WithdrawalSaga -->|Dispatch| Commands
 
     Events -->|Publish| RabbitMQ
@@ -359,10 +358,7 @@ graph TB
 
     Queries -->|Read| ReadModel
 
-    Domain[Domain Logic]
     AccountsModule --> Domain
-    TransactionsModule --> Domain
-    UsersModule --> Domain
     TransactionsModule --> Domain
     UsersModule --> Domain
 ```
@@ -374,56 +370,86 @@ sequenceDiagram
     participant Client as Cliente
     participant API as API Layer
     participant Commands as Command Handlers
-    participant Events as Event Handlers
+    participant Events as Event Handlers / ES Service
     participant Saga as Withdrawal Saga
     participant ReadDB as MongoDB (Read Model)
     participant EventDB as PostgreSQL (Event Store)
     participant Queue as RabbitMQ
     participant Metrics as Prometheus/Logging
+    participant Deduplication as Event Deduplication
 
     Client->>API: POST /transactions/withdrawal
     API->>Commands: WithdrawalCommand
-
     Commands->>Events: BalanceCheckedEvent
-    Events->>Saga: Trigger balanceChecked saga
-    Saga->>Commands: ReserveBalanceCommand
 
+    Note right of Events: EventStoreService valida com Deduplication Service
+    Events->>Deduplication: isDuplicateOrProcessing()
+    alt Não Duplicado
+      Events->>EventDB: Store BalanceCheckedEvent
+      Events->>Deduplication: registerEventAsProcessed()
+      Events->>Saga: Trigger balanceChecked saga
+    else Duplicado
+      Note over Events: Evento Ignorado
+    end
+
+    Saga->>Commands: ReserveBalanceCommand
     Commands->>Events: BalanceReservedEvent
+    Note right of Events: Deduplicação...
     Events->>Saga: Trigger balanceReserved saga
     Saga->>Commands: ProcessTransactionCommand
 
     Commands->>Events: TransactionProcessedEvent
+    Note right of Events: Deduplicação...
     Events->>Saga: Trigger transactionProcessed saga
     Saga->>Commands: ConfirmTransactionCommand
 
     Commands->>Events: TransactionConfirmedEvent
+    Note right of Events: Deduplicação...
     Events->>Saga: Trigger transactionConfirmed saga
     Saga->>Commands: UpdateStatementCommand (Source)
 
     Commands->>Events: SourceStatementUpdatedEvent
+    Note right of Events: Deduplicação (com accountId)...
     Events->>Saga: Trigger sourceStatementUpdated saga
-    Saga->>Commands: NotifyUserCommand (Source)
+
+    alt Transação tem Destino
+       Saga->>Commands: UpdateStatementCommand (Destination)
+       Commands->>Events: DestStatementUpdatedEvent
+       Note right of Events: Deduplicação (com accountId)...
+       Events->>Saga: Trigger destinationStatementUpdated saga
+       Saga->>Commands: NotifyUserCommand (Source)
+    else Transação NÃO tem Destino
+       Saga->>Commands: NotifyUserCommand (Source)
+    end
 
     Commands->>Events: UserNotifiedEvent (Source)
+    Note right of Events: Deduplicação (com userId, accountId)...
     Events->>Saga: Trigger sourceUserNotified saga
 
-    Note over Saga: Fim do fluxo bem-sucedido
-
-    alt Falha no Processamento
-        Commands-->>Events: TransactionProcessedEvent (failed)
-        Events-->>Saga: Trigger compensation
-        Saga-->>Commands: ReleaseBalanceCommand
+    alt Transação tem Destino E Notificação Source OK
+        Saga->>Commands: NotifyUserCommand (Destination)
+        Commands->>Events: UserNotifiedEvent (Destination)
+        Note right of Events: Deduplicação (com userId, accountId)...
+        Events->>Saga: Trigger destinationUserNotified saga
+        Note right of Saga: Saga marca status COMPLETED
+        Saga->>Events: TransactionCompletedEvent
+        Note right of Events: Deduplicação...
+    else Transação NÃO tem Destino E Notificação Source OK
+        Note right of Saga: Saga marca status COMPLETED
+        Saga->>Events: TransactionCompletedEvent
+        Note right of Events: Deduplicação...
     end
 
-    alt Falha na Confirmação
-        Commands-->>Events: TransactionConfirmedEvent (failed)
+    alt Falha em Etapa Crítica
+        Commands-->>Events: AlgumEventoDeFalha
+        Note right of Events: Deduplicação...
         Events-->>Saga: Trigger compensation
         Saga-->>Commands: ReleaseBalanceCommand
+        Note right of Saga: Saga marca status FAILED
     end
 
-    Events->>EventDB: Store Events
-    Events->>ReadDB: Update Read Models
-    Events->>Queue: Publish Events
+    Events->>ReadDB: Update Read Models (assíncrono)
+    Events->>Queue: Publish Events (opcional, se outros serviços consomem)
 
     API->>Metrics: Record API metrics
     Commands->>Metrics: Record command metrics
@@ -595,7 +621,6 @@ sequenceDiagram
 ### Agregados e Contexto
 
 - **TransactionAggregate**: Mantém o estado e regras de negócio da transação
-- **TransactionContextService**: Gerencia o contexto durante todo o fluxo da saga
 - **EventStore**: Armazena todos os eventos da transação
 
 ### Comandos da Saga

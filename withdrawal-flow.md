@@ -15,6 +15,8 @@ sequenceDiagram
     participant StatementService
     participant NotificationService
     participant WithdrawalSaga
+    participant EventStoreService
+    participant DeduplicationService
 
     Client->>API: Solicita saque
     API->>WithdrawalHandler: Processa pedido de saque
@@ -45,15 +47,60 @@ sequenceDiagram
         WithdrawalSaga->>RabbitMQ: Publica UpdateAccountStatementCommand (Source)
         RabbitMQ-->>StatementService: Consome UpdateAccountStatementCommand
         StatementService->>RabbitMQ: Publica StatementUpdatedEvent (Source)
-        RabbitMQ-->>WithdrawalSaga: Consome StatementUpdatedEvent
+        Note right of RabbitMQ: EventStoreService verifica duplicidade (inclui accountId)
+        EventStoreService->>DeduplicationService: isDuplicateOrProcessing(StatementUpdatedEvent, txId, sourceAccountId)
+        alt Evento não duplicado
+            EventStoreService->>EventStoreService: Salva Evento
+            EventStoreService->>DeduplicationService: registerEventAsProcessed(...)
+            RabbitMQ-->>WithdrawalSaga: Consome StatementUpdatedEvent (Source)
+            WithdrawalSaga->>RabbitMQ: Publica UpdateAccountStatementCommand (Destination) # Se houver
+            RabbitMQ-->>StatementService: Consome UpdateAccountStatementCommand
+            StatementService->>RabbitMQ: Publica StatementUpdatedEvent (Destination)
+            Note right of RabbitMQ: EventStoreService verifica duplicidade (inclui accountId)
+            EventStoreService->>DeduplicationService: isDuplicateOrProcessing(StatementUpdatedEvent, txId, destAccountId)
+            alt Evento não duplicado
+                EventStoreService->>EventStoreService: Salva Evento
+                EventStoreService->>DeduplicationService: registerEventAsProcessed(...)
+                RabbitMQ-->>WithdrawalSaga: Consome StatementUpdatedEvent (Destination)
+                WithdrawalSaga->>RabbitMQ: Publica NotifyUserCommand (Source)
+            else Evento duplicado
+                 Note over EventStoreService, WithdrawalSaga: Evento Ignorado
+            end
+        else Evento duplicado
+             Note over EventStoreService, WithdrawalSaga: Evento Ignorado
+        end
 
-        WithdrawalSaga->>RabbitMQ: Publica NotifyUserCommand (Source)
-        RabbitMQ-->>NotificationService: Consome NotifyUserCommand
-        NotificationService->>RabbitMQ: Publica UserNotifiedEvent
-        RabbitMQ-->>WithdrawalSaga: Consome UserNotifiedEvent
+        RabbitMQ-->>NotificationService: Consome NotifyUserCommand (Source)
+        NotificationService->>RabbitMQ: Publica UserNotifiedEvent (Source)
+        Note right of RabbitMQ: EventStoreService verifica duplicidade (inclui userId, accountId)
+        EventStoreService->>DeduplicationService: isDuplicateOrProcessing(UserNotifiedEvent, txId, sourceUserId, sourceAccId)
+        alt Evento não duplicado
+           EventStoreService->>EventStoreService: Salva Evento
+           EventStoreService->>DeduplicationService: registerEventAsProcessed(...)
+           RabbitMQ-->>WithdrawalSaga: Consome UserNotifiedEvent (Source)
+           alt Há conta de destino
+                WithdrawalSaga->>RabbitMQ: Publica NotifyUserCommand (Destination)
+                RabbitMQ-->>NotificationService: Consome NotifyUserCommand (Destination)
+                NotificationService->>RabbitMQ: Publica UserNotifiedEvent (Destination)
+                Note right of RabbitMQ: EventStoreService verifica duplicidade (inclui userId, accountId)
+                EventStoreService->>DeduplicationService: isDuplicateOrProcessing(UserNotifiedEvent, txId, destUserId, destAccId)
+                alt Evento não duplicado
+                    EventStoreService->>EventStoreService: Salva Evento
+                    EventStoreService->>DeduplicationService: registerEventAsProcessed(...)
+                    RabbitMQ-->>WithdrawalSaga: Consome UserNotifiedEvent (Destination)
+                    WithdrawalSaga->>TransactionService: Atualiza status para COMPLETED
+                    WithdrawalSaga->>RabbitMQ: Publica TransactionCompletedEvent # Evento final
+                else Evento duplicado
+                    Note over EventStoreService, WithdrawalSaga: Evento Ignorado
+                end
+           else Não há conta de destino
+                WithdrawalSaga->>TransactionService: Atualiza status para COMPLETED
+                WithdrawalSaga->>RabbitMQ: Publica TransactionCompletedEvent # Evento final
+           end
+        else Evento duplicado
+            Note over EventStoreService, WithdrawalSaga: Evento Ignorado
+        end
 
-        WithdrawalSaga->>TransactionService: Atualiza status para COMPLETED
-        WithdrawalSaga->>RabbitMQ: Publica TransactionCompletedEvent
     else Saldo insuficiente
         WithdrawalSaga->>TransactionService: Atualiza status para FAILED
     end
