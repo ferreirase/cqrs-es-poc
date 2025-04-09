@@ -98,7 +98,7 @@ export class TransactionsModule implements OnModuleInit {
   async onModuleInit() {
     try {
       try {
-        await this.rabbitMQService.setPrefetchCount(1);
+        await this.rabbitMQService.setPrefetchCount(2);
         console.log(
           '✅ RabbitMQ prefetch count configurado para 1 em todos os consumidores',
         );

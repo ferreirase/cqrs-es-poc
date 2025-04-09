@@ -42,8 +42,6 @@ export class WithdrawalHandler {
 
     const { payload } = JSON.parse(msg) as WithdrawalQueueMessage;
 
-    console.log('payload aqui: ', payload);
-
     const { id, sourceAccountId, destinationAccountId, amount, description } =
       payload;
 

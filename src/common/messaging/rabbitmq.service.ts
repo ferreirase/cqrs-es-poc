@@ -23,7 +23,7 @@ export class RabbitMQService implements OnModuleInit {
     try {
       // Definir prefetch count para 1 no nível do canal
       // Isso limita cada consumidor a pegar apenas 1 mensagem por vez
-      await this.setPrefetchCount(1);
+      await this.setPrefetchCount(2);
     } catch (error) {
       this.logger.error('Failed to set RabbitMQ prefetch count', error.message);
     }
@@ -158,7 +158,7 @@ export class RabbitMQService implements OnModuleInit {
   async subscribe<T>(
     queue: string,
     handler: (message: T, originalMessage: ConsumeMessage) => Promise<void>,
-    prefetchCount: number = 1,
+    prefetchCount: number = 2,
   ): Promise<void> {
     try {
       await this.amqpConnection.channel.assertQueue(queue, { durable: true });

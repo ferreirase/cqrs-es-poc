@@ -1,7 +1,8 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
+import { TransactionStatus } from '../../models/transaction.schema';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 // Define the expected message structure from RabbitMQ
@@ -36,53 +37,92 @@ export class ConfirmTransactionHandler {
     },
   })
   async handleConfirmTransactionCommand(
-    msg: ConfirmTransactionMessage,
+    msg: string, // Manter como string por enquanto devido ao JSON.parse
   ): Promise<void> {
     const handlerName = 'ConfirmTransactionHandler';
     const startTime = Date.now();
 
-    const message = JSON.parse(
-      msg as unknown as string,
-    ) as ConfirmTransactionMessage;
+    let message: ConfirmTransactionMessage;
+    try {
+      message = JSON.parse(msg) as ConfirmTransactionMessage;
+    } catch (parseError) {
+      this.loggingService.error(
+        `[${handlerName}] Falha ao parsear mensagem JSON. Descartando.`,
+        { error: parseError.message, originalMessage: msg },
+      );
+      // Mensagem inválida, não podemos processar. Retornar para Ack.
+      return;
+    }
 
     const { transactionId, sourceAccountId, destinationAccountId, amount } =
       message.payload;
 
+    // Verificar transactionId logo no início
+    if (
+      !transactionId ||
+      typeof transactionId !== 'string' ||
+      transactionId === 'undefined'
+    ) {
+      this.loggingService.error(
+        `[${handlerName}] transactionId inválido ou ausente na mensagem. Descartando.`,
+        { payload: message.payload },
+      );
+      return; // Ack mensagem inválida
+    }
+
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
-      sourceAccountId,
-      destinationAccountId,
-      amount,
+      ...message.payload,
     });
 
     try {
-      // Load the transaction aggregate
+      // Carregar o agregado
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
       if (!transactionAggregate) {
         this.loggingService.error(
-          `[${handlerName}] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. Cannot confirm.`,
+          `[${handlerName}] Agregado ${transactionId} não encontrado. Pode ser um erro ou processamento atrasado. Descartando comando.`,
           { transactionId, ...message.payload },
         );
-        throw new NotFoundException(
-          `Transaction aggregate with ID "${transactionId}" not found. Cannot confirm.`,
-        );
+        // Considerar como sucesso para remover da fila, pois não podemos agir
+        return;
       }
 
-      // Apply the confirmTransaction domain logic/event to the aggregate
-      // Pass data from the message. Assume description is not needed or fetched elsewhere if required by event.
+      // *** VERIFICAÇÃO DE IDEMPOTÊNCIA E ESTADO ***
+      const currentStatus = transactionAggregate.status;
+      if (
+        currentStatus === TransactionStatus.CONFIRMED ||
+        currentStatus === TransactionStatus.COMPLETED ||
+        currentStatus === TransactionStatus.FAILED
+      ) {
+        this.loggingService.warn(
+          `[${handlerName}] Transação ${transactionId} já está em estado final (${currentStatus}). Ignorando comando de confirmação duplicado ou atrasado.`,
+          { transactionId, currentStatus },
+        );
+        // Considerar sucesso para Ack da mensagem
+        return;
+      }
+
+      // Se chegou aqui, o estado é PENDING, RESERVED ou PROCESSED, podemos tentar confirmar
+      // A validação interna do agregado (ex: só confirmar se PROCESSED) ainda se aplica
+      this.loggingService.info(
+        `[${handlerName}] Tentando confirmar transação ${transactionId} (estado atual: ${currentStatus})`,
+        { transactionId },
+      );
+
+      // Aplicar o evento de confirmação
       transactionAggregate.confirmTransaction(
         transactionId,
         sourceAccountId,
         destinationAccountId,
         amount,
-        null, // Description - pass null, aggregate event needs it but handler doesn't fetch
+        null, // Description
         true, // Success
-        undefined, // No error on success path
+        undefined, // No error
       );
 
-      // Save the aggregate, which publishes the enriched TransactionConfirmedEvent
+      // Salvar o agregado (persiste e publica evento)
       await this.transactionAggregateRepository.save(transactionAggregate);
 
       const executionTime = (Date.now() - startTime) / 1000;
@@ -93,56 +133,20 @@ export class ConfirmTransactionHandler {
         { operation: 'transaction_confirmed_event_published' },
       );
     } catch (error) {
+      // Erro ao aplicar o evento (ex: validação de estado dentro do agregado falhou)
+      // ou erro ao salvar.
       const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.error(
-        `[${handlerName}] Error confirming transaction (applying event): ${error.message}`,
-        {
-          transactionId,
-          ...message.payload,
-          error: error.stack,
-        },
+        `[${handlerName}] Erro ao confirmar transação ${transactionId}: ${error.message}`,
+        { transactionId, ...message.payload, error: error.stack },
       );
 
-      // Attempt to load aggregate again to publish failure event
-      try {
-        const transactionAggregate =
-          await this.transactionAggregateRepository.findById(transactionId);
-
-        if (transactionAggregate) {
-          // Publish failure event via aggregate
-          transactionAggregate.confirmTransaction(
-            transactionId,
-            sourceAccountId, // Use data from original message
-            destinationAccountId,
-            amount,
-            null, // Description
-            false, // Failure
-            error.message, // Pass error message
-          );
-          await this.transactionAggregateRepository.save(transactionAggregate);
-          this.loggingService.warn(
-            `[${handlerName}] Recorded transaction confirmation failure in aggregate due to error.`,
-            { transactionId },
-          );
-        } else {
-          this.loggingService.error(
-            `[${handlerName}] Aggregate ${transactionId} not found for failure reporting.`,
-            { error: error.stack },
-          );
-        }
-      } catch (aggError) {
-        this.loggingService.error(
-          `[${handlerName}] Error saving aggregate during error handling: ${aggError.message}`,
-          { transactionId, error: aggError.stack },
-        );
-      }
-
-      // Consider NACKing the message
-      throw error; // Rethrow the original error
-    } finally {
-      this.loggingService.info(
-        `[${handlerName}] Finished processing message for ${transactionId}.`,
-      );
+      // Neste caso, lançar o erro para Nack, pois pode ser um problema transitório
+      // ou indicar um erro real que precisa ser investigado.
+      // Se a validação de estado do agregado falhou (ex: tentar confirmar de RESERVED),
+      // isso resultará em Nack e potencial loop se a condição não mudar.
+      // Idealmente, a saga deveria garantir que este comando só chegue no estado correto.
+      throw error;
     }
   }
 }

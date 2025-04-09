@@ -50,7 +50,7 @@ export class WorkerMessageProcessor implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const numWorkers = workerCount || os.cpus().length;
+    const numWorkers = workerCount || os.cpus().length * 1.5;
     this.logger.log(`Inicializando pool com ${numWorkers} workers`);
 
     try {
