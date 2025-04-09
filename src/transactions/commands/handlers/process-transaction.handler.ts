@@ -6,6 +6,7 @@ import { AccountBalanceUpdatedEvent } from '../../../accounts/events/impl/accoun
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ProcessTransactionCommand } from '../../commands/impl/process-transaction.command';
+import { TransactionProcessedEvent } from '../../events/impl/transaction-processed.event';
 import { TransactionType } from '../../models/transaction.entity';
 import { TransactionStatus } from '../../models/transaction.schema';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
@@ -114,13 +115,17 @@ export class ProcessTransactionHandler
         TransactionType.WITHDRAWAL,
       );
 
-      // Aplicar e publicar os eventos
+      // Aplicar e publicar os eventos do agregado
       await this.transactionAggregateRepository.save(transactionAggregate);
+
+      this.loggingService.info(
+        `[ProcessTransactionHandler] Transaction ${transactionId} status updated to PROCESSED`,
+      );
 
       // Commit da transação
       await queryRunner.commitTransaction();
 
-      // Publicar evento para atualizar o modelo de leitura da conta de origem
+      // Publicar eventos de atualização de saldo
       this.eventBus.publish(
         new AccountBalanceUpdatedEvent(
           sourceAccountId,
@@ -130,7 +135,6 @@ export class ProcessTransactionHandler
         ),
       );
 
-      // Publicar evento para atualizar o modelo de leitura da conta de destino
       this.eventBus.publish(
         new AccountBalanceUpdatedEvent(
           destinationAccountId,
@@ -144,20 +148,18 @@ export class ProcessTransactionHandler
         `[ProcessTransactionHandler] Successfully processed transaction ${transactionId}`,
       );
     } catch (error) {
-      // Em caso de erro, fazer rollback da transação
       await queryRunner.rollbackTransaction();
 
       this.loggingService.error(
         `[ProcessTransactionHandler] Error processing transaction: ${error.message}`,
       );
 
-      // Tentar carregar o agregado de transação
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
+          // Atualizar o status da transação no agregado para falha
           transactionAggregate.processTransaction(
             transactionId,
             sourceAccountId,
@@ -169,8 +171,22 @@ export class ProcessTransactionHandler
             TransactionType.WITHDRAWAL,
           );
 
-          // Aplicar e publicar os eventos
           await this.transactionAggregateRepository.save(transactionAggregate);
+
+          // Publicar evento de falha
+          const failedEvent = new TransactionProcessedEvent(
+            transactionId,
+            sourceAccountId,
+            destinationAccountId,
+            amount,
+            false,
+            description,
+            TransactionStatus.FAILED,
+            TransactionType.WITHDRAWAL,
+            error.message,
+          );
+
+          this.eventBus.publish(failedEvent);
         }
       } catch (aggError) {
         this.loggingService.error(
@@ -180,7 +196,6 @@ export class ProcessTransactionHandler
 
       throw error;
     } finally {
-      // Liberar o queryRunner independente do resultado
       await queryRunner.release();
     }
   }

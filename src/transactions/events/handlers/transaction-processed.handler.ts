@@ -12,7 +12,7 @@ export class TransactionProcessedHandler
   implements IEventHandler<TransactionProcessedEvent>
 {
   constructor(
-    @InjectModel('TransactionDocument')
+    @InjectModel(TransactionDocument.name)
     private transactionModel: Model<TransactionDocument>,
   ) {
     console.log('TransactionProcessedHandler initialized');

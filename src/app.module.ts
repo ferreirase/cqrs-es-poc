@@ -6,6 +6,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
+import { EventEntity } from './common/events/event.entity';
 import { RabbitMQService } from './common/messaging/rabbitmq.service';
 import { MonitoringModule } from './common/monitoring/monitoring.module';
 import { TransactionsModule } from './transactions/transactions.module';
@@ -55,7 +56,7 @@ import {
         username: getPostgresUser(configService),
         password: getPostgresPassword(configService),
         database: getPostgresDb(configService),
-        entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        entities: [__dirname + '/**/*.entity{.ts,.js}', EventEntity],
         synchronize: getNodeEnv(configService) === 'production' ? false : true, // Não use isso em produção
       }),
     }),

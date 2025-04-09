@@ -2,9 +2,11 @@ import { AggregateRoot } from '@nestjs/cqrs';
 import { BalanceCheckedEvent } from '../events/impl/balance-checked.event';
 import { BalanceReleasedEvent } from '../events/impl/balance-released.event';
 import { BalanceReservedEvent } from '../events/impl/balance-reserved.event';
+import { StatementUpdatedEvent } from '../events/impl/statement-updated.event';
 import { TransactionConfirmedEvent } from '../events/impl/transaction-confirmed.event';
 import { TransactionCreatedEvent } from '../events/impl/transaction-created.event';
 import { TransactionProcessedEvent } from '../events/impl/transaction-processed.event';
+import { TransactionStatusUpdatedEvent } from '../events/impl/transaction-status-updated.event';
 import { TransactionType } from '../models/transaction.entity';
 import { TransactionStatus } from '../models/transaction.schema';
 
@@ -208,6 +210,82 @@ export class TransactionAggregate extends AggregateRoot {
     this.apply(event);
   }
 
+  // Método para atualizar o status da transação
+  updateStatus(transactionId: string, status: TransactionStatus) {
+    // Validações
+    if (this._id !== transactionId) {
+      throw new Error(
+        `Transaction ID mismatch: ${this._id} != ${transactionId}`,
+      );
+    }
+
+    // Criando o evento
+    const event = new TransactionStatusUpdatedEvent(transactionId, status);
+
+    // Aplicando o evento ao agregado
+    this.apply(event);
+  }
+
+  // Método para verificar saldo
+  checkBalance(
+    transactionId: string,
+    accountId: string,
+    isBalanceSufficient: boolean,
+    amount: number,
+  ) {
+    // Validações
+    if (this._id !== transactionId) {
+      throw new Error(
+        `Transaction ID mismatch: ${this._id} != ${transactionId}`,
+      );
+    }
+
+    if (this._sourceAccountId !== accountId) {
+      throw new Error(
+        `Source account ID mismatch: ${this._sourceAccountId} != ${accountId}`,
+      );
+    }
+
+    // Criando o evento
+    const event = new BalanceCheckedEvent(
+      transactionId,
+      accountId,
+      isBalanceSufficient,
+      amount,
+    );
+
+    // Aplicando o evento ao agregado
+    this.apply(event);
+  }
+
+  // Método para atualizar o extrato
+  updateStatement(
+    transactionId: string,
+    accountId: string,
+    amount: number,
+    type: 'DEBIT' | 'CREDIT',
+    success: boolean,
+  ) {
+    // Validações
+    if (this._id !== transactionId) {
+      throw new Error(
+        `Transaction ID mismatch: ${this._id} != ${transactionId}`,
+      );
+    }
+
+    // Criando o evento
+    const event = new StatementUpdatedEvent(
+      transactionId,
+      accountId,
+      amount,
+      type,
+      success,
+    );
+
+    // Aplicando o evento ao agregado
+    this.apply(event);
+  }
+
   // Método para liberar saldo reservado
   releaseBalance(
     transactionId: string,
@@ -314,5 +392,16 @@ export class TransactionAggregate extends AggregateRoot {
       this._error = 'Failed to release balance';
     }
     this._updatedAt = new Date();
+  }
+
+  onTransactionStatusUpdatedEvent(event: TransactionStatusUpdatedEvent) {
+    this._status = event.status;
+    this._updatedAt = new Date();
+    if (event.processedAt) {
+      this._processedAt = event.processedAt;
+    }
+    if (event.error) {
+      this._error = event.error;
+    }
   }
 }

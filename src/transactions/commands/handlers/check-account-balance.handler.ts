@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { CheckAccountBalanceCommand } from '../../commands/impl/check-account-balance.command';
-import { BalanceCheckedEvent } from '../../events/impl/balance-checked.event';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(CheckAccountBalanceCommand)
 export class CheckAccountBalanceHandler
@@ -16,6 +16,7 @@ export class CheckAccountBalanceHandler
     private accountRepository: Repository<AccountEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
   async execute(command: CheckAccountBalanceCommand): Promise<void> {
@@ -40,23 +41,53 @@ export class CheckAccountBalanceHandler
         `[CheckAccountBalanceHandler] Account ${accountId} has ${account.balance} balance, required: ${amount}, sufficient: ${isBalanceSufficient}`,
       );
 
-      // Publicar evento com o resultado da verificação do saldo
-      this.eventBus.publish(
-        new BalanceCheckedEvent(
-          transactionId,
-          accountId,
-          isBalanceSufficient,
-          amount,
-        ),
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
+
+      if (!transactionAggregate) {
+        throw new NotFoundException(
+          `Transaction aggregate with ID "${transactionId}" not found`,
+        );
+      }
+
+      // Atualizar o status da transação no agregado (via evento)
+      transactionAggregate.checkBalance(
+        transactionId,
+        accountId,
+        isBalanceSufficient,
+        amount,
       );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
     } catch (error) {
       this.loggingService.error(
         `[CheckAccountBalanceHandler] Error checking balance: ${error.message}`,
       );
-      // Em caso de erro, também publicamos um evento com false para isBalanceSufficient
-      this.eventBus.publish(
-        new BalanceCheckedEvent(transactionId, accountId, false, amount),
-      );
+
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
+
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.checkBalance(
+            transactionId,
+            accountId,
+            false,
+            amount,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[CheckAccountBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     }

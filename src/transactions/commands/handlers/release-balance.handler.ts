@@ -5,11 +5,11 @@ import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ReleaseBalanceCommand } from '../../commands/impl/release-balance.command';
-import { BalanceReleasedEvent } from '../../events/impl/balance-released.event';
 import {
   TransactionEntity,
   TransactionStatus,
 } from '../../models/transaction.entity';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(ReleaseBalanceCommand)
 export class ReleaseBalanceHandler
@@ -20,6 +20,7 @@ export class ReleaseBalanceHandler
     private accountRepository: Repository<AccountEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
   async execute(command: ReleaseBalanceCommand): Promise<void> {
@@ -80,13 +81,29 @@ export class ReleaseBalanceHandler
       transaction.updatedAt = new Date();
       await queryRunner.manager.save(transaction);
 
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
+
+      if (!transactionAggregate) {
+        throw new NotFoundException(
+          `Transaction aggregate with ID "${transactionId}" not found`,
+        );
+      }
+
+      // Atualizar o status da transação no agregado (via evento)
+      transactionAggregate.releaseBalance(
+        transactionId,
+        accountId,
+        amount,
+        true,
+      );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
+
       // Commit da transação
       await queryRunner.commitTransaction();
-
-      // Publicar evento indicando que o saldo foi liberado com sucesso
-      this.eventBus.publish(
-        new BalanceReleasedEvent(transactionId, accountId, amount, true),
-      );
 
       this.loggingService.info(
         `[ReleaseBalanceHandler] Successfully released balance for account ${accountId}`,
@@ -99,10 +116,28 @@ export class ReleaseBalanceHandler
         `[ReleaseBalanceHandler] Error releasing balance: ${error.message}`,
       );
 
-      // Publicar evento indicando falha na liberação do saldo
-      this.eventBus.publish(
-        new BalanceReleasedEvent(transactionId, accountId, amount, false),
-      );
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
+
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.releaseBalance(
+            transactionId,
+            accountId,
+            amount,
+            false,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[ReleaseBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     } finally {

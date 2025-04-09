@@ -105,6 +105,38 @@ export class TransactionContextService {
   }
 
   /**
+   * Carrega informações de um usuário a partir do ID da conta
+   */
+  async loadUserFromAccountId(accountId: string): Promise<UserDocument | null> {
+    try {
+      const account = await this.accountModel.findOne({ id: accountId });
+
+      if (!account || !account.owner) {
+        this.loggingService.warn(
+          `[TransactionContextService] Account with ID "${accountId}" not found or has no owner.`,
+        );
+        return null;
+      }
+
+      const user = await this.userModel.findOne({ id: account.owner });
+
+      if (!user) {
+        this.loggingService.warn(
+          `[TransactionContextService] User with ID "${account.owner}" not found.`,
+        );
+        return null;
+      }
+
+      return user;
+    } catch (error) {
+      this.loggingService.error(
+        `[TransactionContextService] Error loading user from account ID: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Carrega informações dos usuários associados às contas
    */
   async loadAccountUserDetails(transactionId: string): Promise<void> {

@@ -4,7 +4,7 @@ import { Model } from 'mongoose';
 import { AccountDocument } from '../../../accounts/models/account.schema';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { UpdateAccountStatementCommand } from '../../commands/impl/update-account-statement.command';
-import { StatementUpdatedEvent } from '../../events/impl/statement-updated.event';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(UpdateAccountStatementCommand)
 export class UpdateAccountStatementHandler
@@ -15,6 +15,7 @@ export class UpdateAccountStatementHandler
     private accountModel: Model<AccountDocument>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
   async execute(command: UpdateAccountStatementCommand): Promise<void> {
@@ -54,10 +55,27 @@ export class UpdateAccountStatementHandler
         },
       );
 
-      // Publicar evento indicando que o extrato foi atualizado com sucesso
-      this.eventBus.publish(
-        new StatementUpdatedEvent(transactionId, accountId, amount, type, true),
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
+
+      if (!transactionAggregate) {
+        throw new Error(
+          `Transaction aggregate with ID "${transactionId}" not found`,
+        );
+      }
+
+      // Atualizar o status da transação no agregado (via evento)
+      transactionAggregate.updateStatement(
+        transactionId,
+        accountId,
+        amount,
+        type,
+        true,
       );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
 
       this.loggingService.info(
         `[UpdateAccountStatementHandler] Successfully updated statement for account ${accountId}`,
@@ -67,16 +85,29 @@ export class UpdateAccountStatementHandler
         `[UpdateAccountStatementHandler] Error updating account statement: ${error.message}`,
       );
 
-      // Publicar evento indicando falha na atualização do extrato
-      this.eventBus.publish(
-        new StatementUpdatedEvent(
-          transactionId,
-          accountId,
-          amount,
-          type,
-          false,
-        ),
-      );
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
+
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.updateStatement(
+            transactionId,
+            accountId,
+            amount,
+            type,
+            false,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[UpdateAccountStatementHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     }

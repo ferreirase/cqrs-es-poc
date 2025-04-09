@@ -242,6 +242,7 @@ export class EventStoreService
         `[EventStoreService] Error saving local event ${routingKeyStyleType} for aggregate ${aggregateId} via EventBus handler: ${error.message}`,
         error.stack,
       );
+      throw error; // Re-throw para garantir que o erro seja propagado
     }
   }
 
@@ -288,7 +289,7 @@ export class EventStoreService
   }
 
   async getEventsByAggregateId(aggregateId: string): Promise<IEvent[]> {
-    console.log(
+    this.logger.debug(
       `[EventStoreService] Getting events for aggregate: ${aggregateId}`,
     );
 
@@ -298,16 +299,16 @@ export class EventStoreService
         order: { timestamp: 'ASC' },
       });
 
-      console.log(
+      this.logger.debug(
         `[EventStoreService] Found ${events.length} events for aggregate: ${aggregateId}`,
       );
 
       if (events.length === 0) {
-        console.warn(
+        this.logger.warn(
           `[EventStoreService] No events found for aggregate: ${aggregateId}`,
         );
       } else {
-        console.log(
+        this.logger.debug(
           `[EventStoreService] Event types found: ${events
             .map(e => e.type)
             .join(', ')}`,
@@ -324,7 +325,7 @@ export class EventStoreService
             data: parsedData,
           };
         } catch (error) {
-          console.error(
+          this.logger.error(
             `[EventStoreService] Error parsing event data: ${error.message}`,
           );
           return {
@@ -336,7 +337,7 @@ export class EventStoreService
         }
       });
     } catch (error) {
-      console.error(
+      this.logger.error(
         `[EventStoreService] Error retrieving events: ${error.message}`,
       );
       return [];

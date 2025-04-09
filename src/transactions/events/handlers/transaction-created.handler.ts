@@ -1,6 +1,10 @@
 import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
+import { InjectRepository } from '@nestjs/typeorm';
 import { Model } from 'mongoose';
+import { Repository } from 'typeorm';
+import { LoggingService } from '../../../common/monitoring/logging.service';
+import { TransactionEntity } from '../../models/transaction.entity';
 import {
   TransactionDocument,
   TransactionStatus,
@@ -12,14 +16,17 @@ export class TransactionCreatedHandler
   implements IEventHandler<TransactionCreatedEvent>
 {
   constructor(
-    @InjectModel('TransactionDocument')
+    @InjectModel(TransactionDocument.name)
     private transactionModel: Model<TransactionDocument>,
+    @InjectRepository(TransactionEntity)
+    private transactionRepository: Repository<TransactionEntity>,
+    private readonly loggingService: LoggingService,
   ) {
-    console.log('TransactionCreatedHandler initialized');
+    this.loggingService.info('TransactionCreatedHandler initialized');
   }
 
   async handle(event: TransactionCreatedEvent) {
-    console.log(
+    this.loggingService.info(
       `[TransactionCreatedHandler] Handling event: ${JSON.stringify(event)}`,
     );
 
@@ -33,7 +40,17 @@ export class TransactionCreatedHandler
     } = event;
 
     try {
-      const createdTransaction = await this.transactionModel.create({
+      // Verifica se a transação já existe para evitar duplicação
+      const existingTransaction = await this.transactionModel.findOne({ id });
+
+      if (existingTransaction) {
+        this.loggingService.warn(
+          `[TransactionCreatedHandler] Transaction with ID ${id} already exists, skipping creation`,
+        );
+        return;
+      }
+
+      await this.transactionRepository.save({
         id,
         sourceAccountId,
         destinationAccountId,
@@ -44,9 +61,25 @@ export class TransactionCreatedHandler
         createdAt: new Date(),
       });
 
-      console.log(`Transaction read model created: ${id}`, createdTransaction);
+      await this.transactionModel.create({
+        id,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        type,
+        status: TransactionStatus.PENDING,
+        description,
+        createdAt: new Date(),
+      });
+
+      this.loggingService.info(
+        `[TransactionCreatedHandler] Transaction read model created: ${id}`,
+      );
     } catch (error) {
-      console.error(`Error creating transaction read model: ${error.message}`);
+      this.loggingService.error(
+        `[TransactionCreatedHandler] Error creating transaction read model: ${error.message}`,
+        { error, stackTrace: error.stack },
+      );
       throw error;
     }
   }

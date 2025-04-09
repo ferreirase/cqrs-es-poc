@@ -519,3 +519,109 @@ classDiagram
     Account "1" -- "n" Transaction : participa
     Transaction "1" -- "n" Event : gera
 ```
+
+# Transaction Saga Flow Implementation
+
+## Detalhamento do Fluxo de Transação com Saga Pattern
+
+O diagrama abaixo demonstra o fluxo completo de uma transação usando o padrão Saga, incluindo os agregados, eventos e comandos:
+
+```mermaid
+sequenceDiagram
+    participant C as Controller
+    participant WH as WithdrawalHandler
+    participant WS as WithdrawalSaga
+    participant TA as TransactionAggregate
+    participant ES as EventStore
+    participant CAB as CheckAccountBalance
+    participant RB as ReserveBalance
+    participant PT as ProcessTransaction
+    participant CT as ConfirmTransaction
+    participant US as UpdateStatement
+    participant NU as NotifyUser
+
+    C->>+WH: WithdrawalCommand
+    WH->>TA: Create Transaction
+    TA->>ES: TransactionCreatedEvent
+    WH->>WS: Start Saga
+
+    %% Verificação de Saldo
+    WS->>CAB: CheckAccountBalanceCommand
+    CAB-->>WS: BalanceCheckedEvent
+
+    alt Saldo Suficiente
+        %% Reserva de Saldo
+        WS->>RB: ReserveBalanceCommand
+        RB-->>WS: BalanceReservedEvent(success)
+
+        %% Processamento
+        WS->>PT: ProcessTransactionCommand
+        PT-->>WS: TransactionProcessedEvent(success)
+
+        %% Confirmação
+        WS->>CT: ConfirmTransactionCommand
+        CT-->>WS: TransactionConfirmedEvent(success)
+
+        %% Atualização de Extrato
+        WS->>US: UpdateAccountStatementCommand
+        US-->>WS: StatementUpdatedEvent(success)
+
+        %% Notificação
+        WS->>NU: NotifyUserCommand
+        NU-->>WS: UserNotifiedEvent(success)
+
+    else Falha em Qualquer Etapa
+        %% Compensação
+        WS->>RB: ReleaseBalanceCommand
+        RB-->>WS: BalanceReleasedEvent
+        WS->>TA: Update Status to FAILED
+    end
+
+    WS-->>WH: Saga Completed
+    WH-->>-C: Response
+
+    Note over WS: Estados da Transação:<br/>PENDING → RESERVED → PROCESSED<br/>→ CONFIRMED → COMPLETED
+```
+
+### Estados da Transação
+
+1. **PENDING**: Estado inicial após criação
+2. **RESERVED**: Após reserva do saldo
+3. **PROCESSED**: Após processamento bem-sucedido
+4. **CONFIRMED**: Após confirmação da transação
+5. **COMPLETED**: Estado final após todas as etapas
+6. **FAILED**: Em caso de falha em qualquer etapa
+
+### Agregados e Contexto
+
+- **TransactionAggregate**: Mantém o estado e regras de negócio da transação
+- **TransactionContextService**: Gerencia o contexto durante todo o fluxo da saga
+- **EventStore**: Armazena todos os eventos da transação
+
+### Comandos da Saga
+
+1. **CheckAccountBalanceCommand**: Verifica disponibilidade de saldo
+2. **ReserveBalanceCommand**: Reserva o saldo para a transação
+3. **ProcessTransactionCommand**: Processa a transação
+4. **ConfirmTransactionCommand**: Confirma a transação
+5. **UpdateAccountStatementCommand**: Atualiza o extrato
+6. **NotifyUserCommand**: Notifica os usuários
+
+### Eventos Gerados
+
+1. **TransactionCreatedEvent**: Criação da transação
+2. **BalanceCheckedEvent**: Resultado da verificação de saldo
+3. **BalanceReservedEvent**: Confirmação da reserva de saldo
+4. **TransactionProcessedEvent**: Resultado do processamento
+5. **TransactionConfirmedEvent**: Confirmação da transação
+6. **StatementUpdatedEvent**: Atualização do extrato
+7. **UserNotifiedEvent**: Notificação dos usuários
+
+### Compensação
+
+Em caso de falha em qualquer etapa após a reserva do saldo:
+
+1. **ReleaseBalanceCommand** é emitido
+2. Saldo é liberado
+3. Transação é marcada como FAILED
+4. Eventos de compensação são registrados no EventStore

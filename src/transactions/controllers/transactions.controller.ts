@@ -55,34 +55,42 @@ export class TransactionsController {
     );
 
     try {
-      const command = new CreateTransactionCommand(
-        null, // id will be generated in the handler
-        createTransactionDto.sourceAccountId,
-        createTransactionDto.destinationAccountId || null,
-        createTransactionDto.amount,
-        createTransactionDto.type,
-        createTransactionDto.description,
+      await this.commandBus.execute(
+        new CreateTransactionCommand(
+          null, // id will be generated in the handler
+          createTransactionDto.sourceAccountId,
+          createTransactionDto.destinationAccountId || null,
+          createTransactionDto.amount,
+          createTransactionDto.type,
+          createTransactionDto.description,
+        ),
       );
-
-      const result = await this.commandBus.execute(command);
 
       // Registra sucesso da API
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.prometheusService
         .getHistogram('api_request_duration_seconds')
         .observe(
           {
             path: '/transactions',
             method: 'POST',
-            status: '200',
+            status: '202', // Accepted - a saga foi iniciada
           },
           executionTime,
         );
 
-      return result;
+      return {
+        message: 'Withdrawal operation started',
+        status: 'PROCESSING',
+        _metadata: {
+          responseTime: executionTime,
+        },
+      };
     } catch (error) {
       // Registra erro da API
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.prometheusService
         .getHistogram('api_request_duration_seconds')
         .observe(

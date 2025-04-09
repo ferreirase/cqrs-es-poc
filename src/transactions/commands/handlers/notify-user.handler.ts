@@ -44,6 +44,11 @@ export class NotifyUserHandler implements ICommandHandler<NotifyUserCommand> {
         amount,
       );
 
+      // Para este exemplo, apenas logamos a notificação
+      this.loggingService.info(
+        `[NotifyUserHandler] Would send notification: ${notificationMessage}`,
+      );
+
       // Em um sistema real, aqui enviaríamos um email, SMS, push notification, etc.
       // Para este exemplo, apenas publicamos em um tópico RabbitMQ e registramos nos logs
 

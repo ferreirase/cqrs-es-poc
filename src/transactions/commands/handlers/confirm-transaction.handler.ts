@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ConfirmTransactionCommand } from '../../commands/impl/confirm-transaction.command';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
@@ -11,6 +11,7 @@ export class ConfirmTransactionHandler
   constructor(
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
+    private eventBus: EventBus,
   ) {}
 
   async execute(command: ConfirmTransactionCommand): Promise<void> {

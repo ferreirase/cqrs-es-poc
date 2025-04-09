@@ -1,29 +1,21 @@
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { v4 as uuidv4 } from 'uuid';
+import { CommandBus, CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { PrometheusService } from '../../../common/monitoring/prometheus.service';
-import { TransactionCreatedEvent } from '../../events/impl/transaction-created.event';
-import {
-  TransactionEntity,
-  TransactionStatus,
-} from '../../models/transaction.entity';
+import { TransactionType } from '../../models/transaction.entity';
 import { CreateTransactionCommand } from '../impl/create-transaction.command';
+import { WithdrawalCommand } from '../impl/withdrawal.command';
 
 @CommandHandler(CreateTransactionCommand)
 export class CreateTransactionHandler
   implements ICommandHandler<CreateTransactionCommand>
 {
   constructor(
-    @InjectRepository(TransactionEntity)
-    private transactionRepository: Repository<TransactionEntity>,
-    private eventBus: EventBus,
+    private commandBus: CommandBus,
     private loggingService: LoggingService,
     private prometheusService: PrometheusService,
   ) {}
 
-  async execute(command: CreateTransactionCommand): Promise<TransactionEntity> {
+  async execute(command: CreateTransactionCommand): Promise<any> {
     const commandName = 'CreateTransactionCommand';
     const startTime = Date.now();
 
@@ -38,7 +30,6 @@ export class CreateTransactionHandler
 
     try {
       const {
-        id,
         sourceAccountId,
         destinationAccountId,
         amount,
@@ -46,79 +37,56 @@ export class CreateTransactionHandler
         description,
       } = command;
 
-      const transactionId = id || uuidv4();
+      // Verifica o tipo de transação e delega para o handler adequado
+      if (type === TransactionType.WITHDRAWAL) {
+        this.loggingService.info(
+          '[CreateTransactionHandler] Delegating to WithdrawalHandler for withdrawal transaction',
+          { sourceAccountId, destinationAccountId, amount },
+        );
 
-      // Criar a transação com status PENDING
-      const transaction = this.transactionRepository.create({
-        id: transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        type,
-        status: TransactionStatus.PENDING,
-        description,
-        createdAt: new Date(),
-      });
+        // Cria um novo command para withdrawal e delega para o handler específico
+        const withdrawalCommand = new WithdrawalCommand(
+          null, // id será gerado no handler
+          sourceAccountId,
+          destinationAccountId,
+          amount,
+          description || 'Withdrawal operation',
+        );
 
-      await this.transactionRepository.save(transaction);
+        // Executa o comando WithdrawalCommand
+        await this.commandBus.execute(withdrawalCommand);
 
-      // Criar e publicar o evento
-      const event = new TransactionCreatedEvent(
-        transaction.id,
-        transaction.sourceAccountId,
-        transaction.destinationAccountId,
-        transaction.amount,
-        transaction.type,
-        transaction.description,
-      );
+        // Registrar métricas de sucesso
+        const executionTime = (Date.now() - startTime) / 1000;
 
-      // Log antes de publicar o evento
-      this.loggingService.info(
-        `[CreateTransactionHandler] Publishing TransactionCreatedEvent: ${JSON.stringify(
-          event,
-        )}`,
-      );
+        this.prometheusService
+          .getCounter('commands_total')
+          .inc({ command: commandName, status: 'success' }, 1);
 
-      this.eventBus.publish(event);
+        this.prometheusService
+          .getHistogram('command_duration_seconds')
+          .observe({ command: commandName }, executionTime);
 
-      // Registrar métricas de sucesso
-      const executionTime = (Date.now() - startTime) / 1000;
+        // Log detalhado do final do comando com o resultado
+        this.loggingService.logCommandSuccess(
+          commandName,
+          {
+            sourceAccountId,
+            destinationAccountId,
+            type,
+            amount,
+          },
+          executionTime,
+          { operation: 'withdrawal_delegated' },
+        );
 
-      this.prometheusService
-        .getCounter('commands_total')
-        .inc({ command: commandName, status: 'success' }, 1);
-
-      this.prometheusService
-        .getHistogram('command_duration_seconds')
-        .observe({ command: commandName }, executionTime);
-
-      // Registrar detalhes da transação criada
-      this.prometheusService.getCounter('command_results').inc(
-        {
-          command: commandName,
-          result: 'transaction_created',
-          status: 'success',
-        },
-        1,
-      );
-
-      // Log detalhado do final do comando com o resultado
-      this.loggingService.logCommandSuccess(
-        commandName,
-        {
-          id: transaction.id,
-          sourceAccountId: transaction.sourceAccountId,
-          type: transaction.type,
-          amount: transaction.amount,
-        },
-        executionTime,
-        {
-          transactionId: transaction.id,
-          status: transaction.status,
-        },
-      );
-
-      return transaction;
+        return {
+          status: 'PROCESSING',
+          message: 'Withdrawal operation started',
+        };
+      } else {
+        throw new Error(`Transaction type ${type} not implemented`);
+      }
     } catch (error) {
       // Registrar métricas de erro
       this.prometheusService

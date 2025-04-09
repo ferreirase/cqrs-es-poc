@@ -9,7 +9,10 @@ import { RabbitMQModule } from '../common/messaging/rabbitmq.module';
 import { MonitoringModule } from '../common/monitoring/monitoring.module';
 import { TransactionsController } from './controllers/transactions.controller';
 import { TransactionEntity } from './models/transaction.entity';
-import { TransactionSchema } from './models/transaction.schema';
+import {
+  TransactionDocument,
+  TransactionSchema,
+} from './models/transaction.schema';
 
 import { AccountsModule } from '../accounts/accounts.module';
 import { AccountEntity } from '../accounts/models/account.entity';
@@ -50,7 +53,7 @@ const Repositories = [TransactionAggregateRepository];
       AccountEntity,
     ]),
     MongooseModule.forFeature([
-      { name: 'TransactionDocument', schema: TransactionSchema },
+      { name: TransactionDocument.name, schema: TransactionSchema },
       { name: 'UserDocument', schema: UserSchema },
       { name: 'AccountDocument', schema: AccountSchema },
     ]),

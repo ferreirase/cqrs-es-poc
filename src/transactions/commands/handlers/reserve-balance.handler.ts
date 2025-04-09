@@ -3,11 +3,8 @@ import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ReserveBalanceCommand } from '../../commands/impl/reserve-balance.command';
-import { BalanceReservedEvent } from '../../events/impl/balance-reserved.event';
-import { TransactionStatus } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(ReserveBalanceCommand)
@@ -19,7 +16,6 @@ export class ReserveBalanceHandler
     private accountRepository: Repository<AccountEntity>,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
-    private rabbitMQService: RabbitMQService,
     private eventBus: EventBus,
   ) {}
 
@@ -82,27 +78,6 @@ export class ReserveBalanceHandler
       // Commit da transação
       await queryRunner.commitTransaction();
 
-      // Criar o evento de BalanceReserved
-      const balanceReservedEvent = new BalanceReservedEvent(
-        transactionId,
-        accountId,
-        amount,
-        true,
-      );
-
-      // Publicar no EventBus do NestJS (para o Saga)
-      this.eventBus.publish(balanceReservedEvent);
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'balance.reserved', {
-        transactionId,
-        accountId,
-        amount,
-        status: TransactionStatus.RESERVED,
-        success: true,
-        reservedAt: new Date(),
-      });
-
       this.loggingService.info(
         `[ReserveBalanceHandler] Successfully reserved balance for account ${accountId}`,
       );
@@ -130,15 +105,6 @@ export class ReserveBalanceHandler
 
           // Aplicar e publicar os eventos
           await this.transactionAggregateRepository.save(transactionAggregate);
-
-          // Publicar o evento de falha no EventBus
-          const balanceReservedEvent = new BalanceReservedEvent(
-            transactionId,
-            accountId,
-            amount,
-            false,
-          );
-          this.eventBus.publish(balanceReservedEvent);
         }
       } catch (aggError) {
         this.loggingService.error(
