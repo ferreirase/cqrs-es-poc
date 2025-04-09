@@ -89,50 +89,68 @@ export class WithdrawalSaga {
             `[WithdrawalSaga] Failed to reserve balance for transaction ${event.transactionId}`,
           );
           // Não há compensação necessária nesta etapa, apenas finaliza o fluxo
-          return of();
+          return of() as Observable<ICommand>;
         }
 
-        // Retorna um Observable de Promise que será resolvido para um Observable de ICommand
-        return from(
-          this.transactionContext.loadTransactionDetails(event.transactionId),
-        ).pipe(
-          switchMap(() => {
-            // Obter informações do contexto
-            const context = this.transactionContext.getTransactionContext(
-              event.transactionId,
-            );
+        // Obter o contexto atual (se existir)
+        const currentContext =
+          this.transactionContext.getTransactionContext(event.transactionId) ||
+          {};
 
-            // Usar os dados do contexto ou valores padrão se não estiverem disponíveis
-            const sourceAccountId = event.accountId;
-            const destinationAccountId = context.destinationAccountId;
-            const amount = event.amount;
-            const description = context.description || 'Withdrawal operation';
+        // Se o contexto atual não tiver destinationAccountId, tentamos carregar do banco
+        if (!currentContext.destinationAccountId) {
+          this.loggingService.info(
+            `[WithdrawalSaga] Context incomplete for transaction ${event.transactionId}, loading details from database`,
+          );
 
-            if (!destinationAccountId) {
-              this.loggingService.error(
-                `[WithdrawalSaga] Missing destination account for transaction ${event.transactionId}`,
+          return from(
+            this.transactionContext.loadTransactionDetails(event.transactionId),
+          ).pipe(
+            switchMap(() => {
+              // Obtém o contexto atualizado após carregar do banco
+              const updatedContext =
+                this.transactionContext.getTransactionContext(
+                  event.transactionId,
+                );
+
+              // Se ainda não temos o destinationAccountId, não podemos continuar
+              if (!updatedContext || !updatedContext.destinationAccountId) {
+                this.loggingService.error(
+                  `[WithdrawalSaga] Failed to get destination account for transaction ${event.transactionId}`,
+                );
+                return of() as Observable<ICommand>;
+              }
+
+              // Continuar o fluxo com o ProcessTransactionCommand
+              return of(
+                new ProcessTransactionCommand(
+                  event.transactionId,
+                  event.accountId,
+                  updatedContext.destinationAccountId,
+                  event.amount,
+                  updatedContext.description || 'Withdrawal operation',
+                ),
               );
-              return of();
-            }
+            }),
+          );
+        }
 
-            // Prossegue para processar a transação
-            return of(
-              new ProcessTransactionCommand(
-                event.transactionId,
-                sourceAccountId,
-                destinationAccountId,
-                amount,
-                description,
-              ),
-            );
-          }),
+        // Se já temos todas as informações necessárias, podemos continuar o fluxo diretamente
+        return of(
+          new ProcessTransactionCommand(
+            event.transactionId,
+            event.accountId,
+            currentContext.destinationAccountId,
+            event.amount,
+            currentContext.description || 'Withdrawal operation',
+          ),
         );
       }),
       catchError(error => {
         this.loggingService.error(
           `[WithdrawalSaga] Error in balanceReserved saga: ${error.message}`,
         );
-        return of();
+        return of() as Observable<ICommand>;
       }),
     );
   };

@@ -1,26 +1,16 @@
 import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ConfirmTransactionCommand } from '../../commands/impl/confirm-transaction.command';
-import { TransactionConfirmedEvent } from '../../events/impl/transaction-confirmed.event';
-import {
-  TransactionEntity,
-  TransactionStatus,
-} from '../../models/transaction.entity';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(ConfirmTransactionCommand)
 export class ConfirmTransactionHandler
   implements ICommandHandler<ConfirmTransactionCommand>
 {
   constructor(
-    @InjectRepository(TransactionEntity)
-    private transactionRepository: Repository<TransactionEntity>,
-    private eventBus: EventBus,
     private loggingService: LoggingService,
-    private rabbitMQService: RabbitMQService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
   async execute(command: ConfirmTransactionCommand): Promise<void> {
@@ -32,44 +22,27 @@ export class ConfirmTransactionHandler
     );
 
     try {
-      // Buscar a transação
-      const transaction = await this.transactionRepository.findOne({
-        where: { id: transactionId },
-      });
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
 
-      if (!transaction) {
+      if (!transactionAggregate) {
         throw new NotFoundException(
           `Transaction with ID "${transactionId}" not found`,
         );
       }
 
-      // Atualizar status da transação para CONFIRMED
-      transaction.status = TransactionStatus.CONFIRMED;
-      transaction.updatedAt = new Date();
-      await this.transactionRepository.save(transaction);
-
-      // Publicar evento indicando que a transação foi confirmada com sucesso
-      this.eventBus.publish(
-        new TransactionConfirmedEvent(
-          transactionId,
-          sourceAccountId,
-          destinationAccountId,
-          amount,
-          true,
-        ),
-      );
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'transaction.confirmed', {
-        id: transactionId,
+      // Confirmar a transação no agregado (via evento)
+      transactionAggregate.confirmTransaction(
+        transactionId,
         sourceAccountId,
         destinationAccountId,
         amount,
-        status: TransactionStatus.CONFIRMED,
-        success: true,
-        confirmedAt: new Date(),
-        type: transaction.type,
-      });
+        true,
+      );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
 
       this.loggingService.info(
         `[ConfirmTransactionHandler] Successfully confirmed transaction ${transactionId}`,
@@ -79,28 +52,29 @@ export class ConfirmTransactionHandler
         `[ConfirmTransactionHandler] Error confirming transaction: ${error.message}`,
       );
 
-      // Publicar evento indicando falha na confirmação
-      this.eventBus.publish(
-        new TransactionConfirmedEvent(
-          transactionId,
-          sourceAccountId,
-          destinationAccountId,
-          amount,
-          false,
-        ),
-      );
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
 
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'transaction.confirmed', {
-        id: transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        status: TransactionStatus.FAILED,
-        success: false,
-        error: error.message,
-        confirmedAt: new Date(),
-      });
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.confirmTransaction(
+            transactionId,
+            sourceAccountId,
+            destinationAccountId,
+            amount,
+            false,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[ConfirmTransactionHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     }

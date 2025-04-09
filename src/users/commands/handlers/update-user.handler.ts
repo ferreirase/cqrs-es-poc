@@ -2,7 +2,6 @@ import { NotFoundException } from '@nestjs/common';
 import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { PrometheusService } from '../../../common/monitoring/prometheus.service';
 import { UserUpdatedEvent } from '../../events/impl/user-updated.event';
@@ -15,7 +14,6 @@ export class UpdateUserHandler implements ICommandHandler<UpdateUserCommand> {
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
     private eventBus: EventBus,
-    private rabbitMQService: RabbitMQService,
     private loggingService: LoggingService,
     private prometheusService: PrometheusService,
   ) {}
@@ -50,9 +48,6 @@ export class UpdateUserHandler implements ICommandHandler<UpdateUserCommand> {
       this.eventBus.publish(
         new UserUpdatedEvent(user.id, user.name, user.document, user.email),
       );
-
-      // Publish the event to RabbitMQ
-      this.rabbitMQService.publish('events', 'user.updated', user);
 
       // Registrar métricas de sucesso
       const executionTime = (Date.now() - startTime) / 1000;

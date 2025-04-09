@@ -2,7 +2,6 @@ import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { PrometheusService } from '../../../common/monitoring/prometheus.service';
 import { TransactionCreatedEvent } from '../../events/impl/transaction-created.event';
@@ -19,7 +18,6 @@ export class CreateTransactionHandler
   constructor(
     @InjectRepository(TransactionEntity)
     private transactionRepository: Repository<TransactionEntity>,
-    private rabbitMQService: RabbitMQService,
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private prometheusService: PrometheusService,
@@ -82,15 +80,6 @@ export class CreateTransactionHandler
       );
 
       this.eventBus.publish(event);
-
-      // Publicar no RabbitMQ com metadados adicionais de métricas
-      this.rabbitMQService.publish('events', 'transaction.created', {
-        ...transaction,
-        processingMetadata: {
-          startTime,
-          executionTime: (Date.now() - startTime) / 1000,
-        },
-      });
 
       // Registrar métricas de sucesso
       const executionTime = (Date.now() - startTime) / 1000;

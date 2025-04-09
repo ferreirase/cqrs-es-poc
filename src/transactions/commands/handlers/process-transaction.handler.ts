@@ -4,16 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountBalanceUpdatedEvent } from '../../../accounts/events/impl/account-balance-updated.event';
 import { AccountEntity } from '../../../accounts/models/account.entity';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ProcessTransactionCommand } from '../../commands/impl/process-transaction.command';
-import { TransactionProcessedEvent } from '../../events/impl/transaction-processed.event';
-import {
-  TransactionStatus as EntityTransactionStatus,
-  TransactionEntity,
-  TransactionType,
-} from '../../models/transaction.entity';
+import { TransactionType } from '../../models/transaction.entity';
 import { TransactionStatus } from '../../models/transaction.schema';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(ProcessTransactionCommand)
 export class ProcessTransactionHandler
@@ -22,11 +17,9 @@ export class ProcessTransactionHandler
   constructor(
     @InjectRepository(AccountEntity)
     private accountRepository: Repository<AccountEntity>,
-    @InjectRepository(TransactionEntity)
-    private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
-    private rabbitMQService: RabbitMQService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
   async execute(command: ProcessTransactionCommand): Promise<void> {
@@ -99,33 +92,30 @@ export class ProcessTransactionHandler
       await queryRunner.manager.save(sourceAccount);
       await queryRunner.manager.save(destinationAccount);
 
-      // Atualizar status da transação
-      const transaction = await queryRunner.manager
-        .getRepository(TransactionEntity)
-        .findOne({
-          where: { id: transactionId },
-        });
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
 
-      if (transaction) {
-        transaction.status = EntityTransactionStatus.PROCESSED;
-        transaction.destinationAccountId = destinationAccountId;
-        transaction.description = description;
-        transaction.updatedAt = new Date();
-        await queryRunner.manager.save(transaction);
-      } else {
-        // Caso a transação não exista ainda (não deveria acontecer neste ponto)
-        const newTransaction = this.transactionRepository.create({
-          id: transactionId,
-          sourceAccountId,
-          destinationAccountId,
-          amount,
-          status: EntityTransactionStatus.PROCESSED,
-          type: TransactionType.WITHDRAWAL,
-          description,
-          createdAt: new Date(),
-        });
-        await queryRunner.manager.save(newTransaction);
+      if (!transactionAggregate) {
+        throw new NotFoundException(
+          `Transaction with ID "${transactionId}" not found`,
+        );
       }
+
+      // Processar a transação no agregado (via evento)
+      transactionAggregate.processTransaction(
+        transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        true,
+        description,
+        TransactionStatus.PROCESSED,
+        TransactionType.WITHDRAWAL,
+      );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
 
       // Commit da transação
       await queryRunner.commitTransaction();
@@ -150,33 +140,6 @@ export class ProcessTransactionHandler
         ),
       );
 
-      // Publicar evento indicando que a transação foi processada com sucesso
-      this.eventBus.publish(
-        new TransactionProcessedEvent(
-          transactionId,
-          sourceAccountId,
-          destinationAccountId,
-          amount,
-          true,
-          description,
-          TransactionStatus.PROCESSED,
-          TransactionType.WITHDRAWAL,
-        ),
-      );
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'transaction.processed', {
-        id: transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        type: TransactionType.WITHDRAWAL,
-        status: TransactionStatus.PROCESSED,
-        description,
-        processedAt: new Date(),
-        success: true,
-      });
-
       this.loggingService.info(
         `[ProcessTransactionHandler] Successfully processed transaction ${transactionId}`,
       );
@@ -188,33 +151,32 @@ export class ProcessTransactionHandler
         `[ProcessTransactionHandler] Error processing transaction: ${error.message}`,
       );
 
-      // Publicar evento indicando falha no processamento
-      this.eventBus.publish(
-        new TransactionProcessedEvent(
-          transactionId,
-          sourceAccountId,
-          destinationAccountId,
-          amount,
-          false,
-          description,
-          TransactionStatus.FAILED,
-          TransactionType.WITHDRAWAL,
-        ),
-      );
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
 
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'transaction.processed', {
-        id: transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        type: TransactionType.WITHDRAWAL,
-        status: TransactionStatus.FAILED,
-        description,
-        processedAt: new Date(),
-        success: false,
-        error: error.message,
-      });
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.processTransaction(
+            transactionId,
+            sourceAccountId,
+            destinationAccountId,
+            amount,
+            false,
+            description,
+            TransactionStatus.FAILED,
+            TransactionType.WITHDRAWAL,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[ProcessTransactionHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     } finally {

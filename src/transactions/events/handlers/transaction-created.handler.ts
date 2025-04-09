@@ -1,7 +1,6 @@
 import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import {
   TransactionDocument,
   TransactionStatus,
@@ -15,7 +14,6 @@ export class TransactionCreatedHandler
   constructor(
     @InjectModel('TransactionDocument')
     private transactionModel: Model<TransactionDocument>,
-    private rabbitMQService: RabbitMQService,
   ) {
     console.log('TransactionCreatedHandler initialized');
   }
@@ -36,18 +34,6 @@ export class TransactionCreatedHandler
 
     try {
       const createdTransaction = await this.transactionModel.create({
-        id,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        type,
-        status: TransactionStatus.PENDING,
-        description,
-        createdAt: new Date(),
-      });
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'transaction.read.created', {
         id,
         sourceAccountId,
         destinationAccountId,

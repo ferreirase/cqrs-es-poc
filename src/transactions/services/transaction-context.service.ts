@@ -54,15 +54,36 @@ export class TransactionContextService {
    */
   async loadTransactionDetails(transactionId: string): Promise<void> {
     try {
+      // Primeiro verifica se já temos algumas informações no contexto que podemos usar
+      const existingContext = this.getTransactionContext(transactionId) || {};
+
       const transaction = await this.transactionRepository.findOne({
         where: { id: transactionId },
       });
 
       if (!transaction) {
-        throw new Error(`Transaction with ID "${transactionId}" not found`);
+        this.loggingService.warn(
+          `[TransactionContextService] Transaction with ID "${transactionId}" not found in database. Using existing context.`,
+        );
+
+        // Se não encontrarmos a transação no banco, mas tivermos informações parciais no contexto,
+        // vamos manter essas informações e não lançar um erro
+        if (
+          existingContext.sourceAccountId &&
+          existingContext.destinationAccountId
+        ) {
+          return;
+        }
+
+        // Se não tivermos informações suficientes no contexto, registramos o erro, mas não lançamos exceção
+        this.loggingService.error(
+          `[TransactionContextService] Transaction with ID "${transactionId}" not found and no context available.`,
+        );
+        return;
       }
 
       const context = {
+        ...existingContext, // Manter informações existentes
         sourceAccountId: transaction.sourceAccountId,
         destinationAccountId: transaction.destinationAccountId,
         amount: transaction.amount,
@@ -138,5 +159,32 @@ export class TransactionContextService {
         `[TransactionContextService] Error loading account user details: ${error.message}`,
       );
     }
+  }
+
+  /**
+   * Armazena o contexto inicial da transação
+   */
+  async setInitialContext(
+    transactionId: string,
+    sourceAccountId: string,
+    destinationAccountId: string,
+    amount: number,
+    type: any, // Usar o tipo correto quando disponível
+    description: string,
+  ): Promise<void> {
+    const context = {
+      sourceAccountId,
+      destinationAccountId,
+      amount,
+      description,
+      type,
+      status: 'PENDING',
+    };
+
+    this.loggingService.info(
+      `[TransactionContextService] Setting initial context for transaction ${transactionId}`,
+    );
+
+    await this.setTransactionContext(transactionId, context);
   }
 }

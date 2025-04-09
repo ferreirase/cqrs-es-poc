@@ -48,14 +48,6 @@ export class CreateAccountHandler
         new AccountCreatedEvent(account.id, ownerId, initialBalance),
       );
 
-      // Publish the event to RabbitMQ
-      this.rabbitMQService.publish('events', 'account.created', {
-        id: account.id,
-        owner_id: ownerId,
-        balance: initialBalance,
-        createdAt: account.createdAt,
-      });
-
       // Registrar métricas de sucesso
       const executionTime = (Date.now() - startTime) / 1000;
 

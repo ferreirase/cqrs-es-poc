@@ -17,6 +17,7 @@ import { AccountSchema } from '../accounts/models/account.schema';
 import { TransactionContextService } from '../transactions/services/transaction-context.service';
 import { UserEntity } from '../users/models/user.entity';
 import { UserSchema } from '../users/models/user.schema';
+import { TransactionAggregate } from './aggregates/transaction.aggregate';
 import { CreateTransactionHandler } from './commands/handlers/create-transaction.handler';
 import { ProcessTransactionHandler as ExistingProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
 import { SagaCommandHandlers } from './commands/handlers/saga-handlers.index';
@@ -24,6 +25,7 @@ import { EventHandlers } from './events/handlers';
 import { GetAccountTransactionsHandler } from './queries/handlers/get-account-transactions.handler';
 import { GetAllTransactionsHandler } from './queries/handlers/get-all-transactions.handler';
 import { GetTransactionHandler } from './queries/handlers/get-transaction.handler';
+import { TransactionAggregateRepository } from './repositories/transaction-aggregate.repository';
 import { WithdrawalSaga } from './sagas/withdrawal.saga';
 
 const CommandHandlers = [CreateTransactionHandler, ...SagaCommandHandlers];
@@ -33,6 +35,8 @@ const QueryHandlers = [
   GetAllTransactionsHandler,
 ];
 const Sagas = [WithdrawalSaga];
+const Aggregates = [TransactionAggregate];
+const Repositories = [TransactionAggregateRepository];
 
 @Module({
   imports: [
@@ -61,6 +65,8 @@ const Sagas = [WithdrawalSaga];
     ...EventHandlers,
     ...QueryHandlers,
     ...Sagas,
+    ...Aggregates,
+    ...Repositories,
   ],
 })
 export class TransactionsModule {}

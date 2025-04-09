@@ -3,7 +3,6 @@ import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
-import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { CheckAccountBalanceCommand } from '../../commands/impl/check-account-balance.command';
 import { BalanceCheckedEvent } from '../../events/impl/balance-checked.event';
@@ -17,7 +16,6 @@ export class CheckAccountBalanceHandler
     private accountRepository: Repository<AccountEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
-    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: CheckAccountBalanceCommand): Promise<void> {
@@ -51,16 +49,6 @@ export class CheckAccountBalanceHandler
           amount,
         ),
       );
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'balance.checked', {
-        transactionId,
-        accountId,
-        amount,
-        currentBalance: account.balance,
-        isBalanceSufficient,
-        checkedAt: new Date(),
-      });
     } catch (error) {
       this.loggingService.error(
         `[CheckAccountBalanceHandler] Error checking balance: ${error.message}`,
@@ -69,16 +57,6 @@ export class CheckAccountBalanceHandler
       this.eventBus.publish(
         new BalanceCheckedEvent(transactionId, accountId, false, amount),
       );
-
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'balance.checked', {
-        transactionId,
-        accountId,
-        amount,
-        isBalanceSufficient: false,
-        error: error.message,
-        checkedAt: new Date(),
-      });
 
       throw error;
     }

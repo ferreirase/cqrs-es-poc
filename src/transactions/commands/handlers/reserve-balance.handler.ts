@@ -7,11 +7,8 @@ import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ReserveBalanceCommand } from '../../commands/impl/reserve-balance.command';
 import { BalanceReservedEvent } from '../../events/impl/balance-reserved.event';
-import {
-  TransactionEntity,
-  TransactionStatus,
-  TransactionType,
-} from '../../models/transaction.entity';
+import { TransactionStatus } from '../../models/transaction.entity';
+import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
 @CommandHandler(ReserveBalanceCommand)
 export class ReserveBalanceHandler
@@ -20,11 +17,10 @@ export class ReserveBalanceHandler
   constructor(
     @InjectRepository(AccountEntity)
     private accountRepository: Repository<AccountEntity>,
-    @InjectRepository(TransactionEntity)
-    private transactionRepository: Repository<TransactionEntity>,
-    private eventBus: EventBus,
     private loggingService: LoggingService,
+    private transactionAggregateRepository: TransactionAggregateRepository,
     private rabbitMQService: RabbitMQService,
+    private eventBus: EventBus,
   ) {}
 
   async execute(command: ReserveBalanceCommand): Promise<void> {
@@ -57,37 +53,45 @@ export class ReserveBalanceHandler
         throw new Error(`Insufficient balance in account ${accountId}`);
       }
 
-      // Registrar a reserva na tabela de transações
-      const transaction = await queryRunner.manager
-        .getRepository(TransactionEntity)
-        .findOne({
-          where: { id: transactionId },
-        });
+      // Carregar o agregado de transação
+      const transactionAggregate =
+        await this.transactionAggregateRepository.findById(transactionId);
 
-      if (transaction) {
-        transaction.status = TransactionStatus.RESERVED;
-        transaction.updatedAt = new Date();
-        await queryRunner.manager.save(transaction);
-      } else {
-        // Criar uma nova transação se não existir
-        const newTransaction = this.transactionRepository.create({
-          id: transactionId,
-          sourceAccountId: accountId,
-          amount: amount,
-          status: TransactionStatus.RESERVED,
-          type: TransactionType.WITHDRAWAL,
-          createdAt: new Date(),
-        });
-        await queryRunner.manager.save(newTransaction);
+      // Se o agregado não for encontrado, é um erro real no fluxo, pois deveria existir
+      if (!transactionAggregate) {
+        this.loggingService.error(
+          `[ReserveBalanceHandler] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. This indicates an issue in the event flow or persistence. The 'transaction.created' event might not have been processed or saved correctly.`,
+        );
+        // Lançar um erro claro indicando que o agregado não existe quando deveria.
+        throw new NotFoundException(
+          `Transaction aggregate with ID "${transactionId}" not found. Cannot reserve balance.`,
+        );
       }
+
+      // Atualizar o status da transação no agregado (via evento)
+      transactionAggregate.reserveBalance(
+        transactionId,
+        accountId,
+        amount,
+        true, // Assumindo sucesso aqui, pois o agregado foi encontrado
+      );
+
+      // Aplicar e publicar os eventos
+      await this.transactionAggregateRepository.save(transactionAggregate);
 
       // Commit da transação
       await queryRunner.commitTransaction();
 
-      // Publicar evento indicando que o saldo foi reservado com sucesso
-      this.eventBus.publish(
-        new BalanceReservedEvent(transactionId, accountId, amount, true),
+      // Criar o evento de BalanceReserved
+      const balanceReservedEvent = new BalanceReservedEvent(
+        transactionId,
+        accountId,
+        amount,
+        true,
       );
+
+      // Publicar no EventBus do NestJS (para o Saga)
+      this.eventBus.publish(balanceReservedEvent);
 
       // Publicar no RabbitMQ
       this.rabbitMQService.publish('events', 'balance.reserved', {
@@ -110,21 +114,37 @@ export class ReserveBalanceHandler
         `[ReserveBalanceHandler] Error reserving balance: ${error.message}`,
       );
 
-      // Publicar evento indicando falha na reserva do saldo
-      this.eventBus.publish(
-        new BalanceReservedEvent(transactionId, accountId, amount, false),
-      );
+      // Tentar carregar o agregado de transação
+      try {
+        const transactionAggregate =
+          await this.transactionAggregateRepository.findById(transactionId);
 
-      // Publicar no RabbitMQ
-      this.rabbitMQService.publish('events', 'balance.reserved', {
-        transactionId,
-        accountId,
-        amount,
-        status: TransactionStatus.FAILED,
-        success: false,
-        error: error.message,
-        reservedAt: new Date(),
-      });
+        if (transactionAggregate) {
+          // Atualizar o status da transação no agregado (via evento de falha)
+          transactionAggregate.reserveBalance(
+            transactionId,
+            accountId,
+            amount,
+            false,
+          );
+
+          // Aplicar e publicar os eventos
+          await this.transactionAggregateRepository.save(transactionAggregate);
+
+          // Publicar o evento de falha no EventBus
+          const balanceReservedEvent = new BalanceReservedEvent(
+            transactionId,
+            accountId,
+            amount,
+            false,
+          );
+          this.eventBus.publish(balanceReservedEvent);
+        }
+      } catch (aggError) {
+        this.loggingService.error(
+          `[ReserveBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+        );
+      }
 
       throw error;
     } finally {

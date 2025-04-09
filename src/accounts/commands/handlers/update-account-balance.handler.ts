@@ -50,13 +50,6 @@ export class UpdateAccountBalanceHandler
       ),
     );
 
-    // Publish the event to RabbitMQ
-    this.rabbitMQService.publish('events', 'account.balance.updated', {
-      accountId: account.id,
-      previousBalance: previousBalance,
-      newBalance: account.balance,
-    });
-
     return account;
   }
 }
