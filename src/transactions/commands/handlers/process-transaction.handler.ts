@@ -48,7 +48,11 @@ export class ProcessTransactionHandler {
     const handlerName = 'ProcessTransactionHandler';
     const startTime = Date.now();
 
-    const { transactionId } = msg.payload;
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as ProcessTransactionMessage;
+
+    const { transactionId } = queueMessage.payload;
 
     this.loggingService.logHandlerStart(handlerName, { transactionId });
 
@@ -227,7 +231,7 @@ export class ProcessTransactionHandler {
           destinationAccountId,
           amount,
           error: error.stack,
-          payload: msg.payload,
+          payload: queueMessage.payload,
         },
       );
 

@@ -56,6 +56,10 @@ export class NotifyUserHandler {
     const handlerName = 'NotifyUserHandler';
     const startTime = Date.now();
 
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as NotifyUserMessage;
+
     const {
       userId,
       transactionId,
@@ -64,10 +68,13 @@ export class NotifyUserHandler {
       status,
       message,
       details,
-    } = msg.payload;
+    } = queueMessage.payload;
+
     const amount = details.amount;
 
-    this.loggingService.logHandlerStart(handlerName, { ...msg.payload });
+    this.loggingService.logHandlerStart(handlerName, {
+      ...queueMessage.payload,
+    });
 
     let notificationSuccess = false;
     let notificationError: string | undefined = undefined;
@@ -131,7 +138,7 @@ export class NotifyUserHandler {
       this.loggingService.error(
         `[${handlerName}] Error sending notification for ${transactionId} to user ${userId}: ${notificationError}`,
         {
-          ...msg.payload,
+          ...queueMessage.payload,
           error: error.stack,
         },
       );

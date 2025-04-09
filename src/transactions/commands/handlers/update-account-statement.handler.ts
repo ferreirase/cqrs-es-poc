@@ -52,6 +52,10 @@ export class UpdateAccountStatementHandler {
     const handlerName = 'UpdateAccountStatementHandler';
     const startTime = Date.now();
 
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as UpdateStatementMessage;
+
     const {
       transactionId,
       accountId,
@@ -59,10 +63,13 @@ export class UpdateAccountStatementHandler {
       description,
       transactionTimestamp,
       isSource,
-    } = msg.payload;
+    } = queueMessage.payload;
     const type = amount < 0 ? 'DEBIT' : 'CREDIT';
 
-    this.loggingService.logHandlerStart(handlerName, { ...msg.payload, type });
+    this.loggingService.logHandlerStart(handlerName, {
+      ...queueMessage.payload,
+      type,
+    });
 
     let success = false;
     let errorMsg: string | undefined = undefined;
@@ -149,7 +156,7 @@ export class UpdateAccountStatementHandler {
           accountId,
           amount,
           error: error.stack,
-          payload: msg.payload,
+          payload: queueMessage.payload,
         },
       );
     }

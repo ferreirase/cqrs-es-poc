@@ -34,7 +34,11 @@ export class ReserveBalanceHandler {
     const handlerName = 'ReserveBalanceHandler';
     const startTime = Date.now();
 
-    const { transactionId, accountId, amount } = msg.payload;
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as ReserveBalanceMessage;
+
+    const { transactionId, accountId, amount } = queueMessage.payload;
 
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
@@ -81,7 +85,7 @@ export class ReserveBalanceHandler {
           accountId,
           amount,
           error: error.stack,
-          payload: msg.payload,
+          payload: queueMessage.payload,
         },
       );
 

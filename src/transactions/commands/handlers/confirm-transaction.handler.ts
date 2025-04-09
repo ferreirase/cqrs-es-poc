@@ -41,8 +41,12 @@ export class ConfirmTransactionHandler {
     const handlerName = 'ConfirmTransactionHandler';
     const startTime = Date.now();
 
+    const message = JSON.parse(
+      msg as unknown as string,
+    ) as ConfirmTransactionMessage;
+
     const { transactionId, sourceAccountId, destinationAccountId, amount } =
-      msg.payload;
+      message.payload;
 
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
@@ -59,7 +63,7 @@ export class ConfirmTransactionHandler {
       if (!transactionAggregate) {
         this.loggingService.error(
           `[${handlerName}] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. Cannot confirm.`,
-          { transactionId, ...msg.payload },
+          { transactionId, ...message.payload },
         );
         throw new NotFoundException(
           `Transaction aggregate with ID "${transactionId}" not found. Cannot confirm.`,
@@ -94,7 +98,7 @@ export class ConfirmTransactionHandler {
         `[${handlerName}] Error confirming transaction (applying event): ${error.message}`,
         {
           transactionId,
-          ...msg.payload,
+          ...message.payload,
           error: error.stack,
         },
       );

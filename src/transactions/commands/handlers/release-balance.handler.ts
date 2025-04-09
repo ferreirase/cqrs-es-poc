@@ -46,9 +46,15 @@ export class ReleaseBalanceHandler {
     const handlerName = 'ReleaseBalanceHandler';
     const startTime = Date.now();
 
-    const { transactionId, accountId, amount, reason } = msg.payload;
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as ReleaseBalanceMessage;
 
-    this.loggingService.logHandlerStart(handlerName, { ...msg.payload });
+    const { transactionId, accountId, amount, reason } = queueMessage.payload;
+
+    this.loggingService.logHandlerStart(handlerName, {
+      ...queueMessage.payload,
+    });
 
     // Keep TypeORM transaction for consistency
     const queryRunner =
@@ -195,7 +201,7 @@ export class ReleaseBalanceHandler {
           amount,
           reason,
           error: error.stack,
-          payload: msg.payload,
+          payload: queueMessage.payload,
         },
       );
 
@@ -239,7 +245,7 @@ export class ReleaseBalanceHandler {
       if (compensationSuccess) {
         this.loggingService.logCommandSuccess(
           handlerName,
-          msg.payload,
+          queueMessage.payload,
           executionTime,
           { operation: 'balance_released_event_published' },
         );
@@ -247,7 +253,7 @@ export class ReleaseBalanceHandler {
         this.loggingService.logCommandError(
           handlerName,
           new Error(compensationError || 'Release balance failed'),
-          msg.payload,
+          queueMessage.payload,
         );
       }
       this.loggingService.info(

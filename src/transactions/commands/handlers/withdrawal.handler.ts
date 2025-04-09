@@ -19,7 +19,6 @@ interface WithdrawalMessage {
     amount: number;
     description: string;
   };
-  // Add correlationId, etc., if needed
 }
 
 @Injectable()
@@ -44,12 +43,16 @@ export class WithdrawalHandler /* implements ICommandHandler<WithdrawalCommand> 
     },
   })
   async handleWithdrawalCommand(msg: WithdrawalMessage): Promise<void> {
+    const queueMessage = JSON.parse(
+      msg as unknown as string,
+    ) as WithdrawalMessage;
+
     const handlerName = 'WithdrawalHandler';
     const startTime = Date.now();
 
     try {
       const { sourceAccountId, destinationAccountId, amount, description } =
-        msg.payload;
+        queueMessage.payload;
 
       const transactionId = uuidv4();
 
@@ -100,86 +103,25 @@ export class WithdrawalHandler /* implements ICommandHandler<WithdrawalCommand> 
       );
 
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.loggingService.logCommandSuccess(
         handlerName,
         { transactionId, sourceAccountId, amount },
         executionTime,
-        { operation: 'published_check_balance' },
+        { operation: 'published_check_balance_command' },
       );
 
       return;
     } catch (error) {
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.loggingService.logCommandError(handlerName, error, {
-        payload: msg.payload,
+        payload: queueMessage.payload,
+        executionTime,
       });
       // Consider implementing retry/dead-letter queue logic here
       // For now, just rethrow
       throw error;
     }
   }
-
-  // Removed original execute method
-  /*
-  async execute(command: WithdrawalCommand): Promise<void> {
-    try {
-      const { id, sourceAccountId, destinationAccountId, amount, description } =
-        command;
-
-      const transactionId = id || uuidv4();
-
-      this.loggingService.info(
-        `[WithdrawalHandler] Starting withdrawal saga for transaction: ${transactionId}`,
-        { transactionId, sourceAccountId, destinationAccountId, amount },
-      );
-
-      // Criar um novo agregado de transação
-      const transactionAggregate = new TransactionAggregate();
-
-      // Aplicar o evento de criação de transação ao agregado
-      transactionAggregate.createTransaction(
-        transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        TransactionType.WITHDRAWAL,
-        description,
-      );
-
-      // Salvar o agregado - IMPORTANTE: isso publica os eventos, incluindo TransactionCreatedEvent
-      await this.transactionAggregateRepository.save(transactionAggregate);
-
-      // Aguarde assincronamente para garantir que o evento foi processado
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Armazenar o contexto inicial da transação no TransactionContextService
-      await this.transactionContextService.setInitialContext(
-        transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        TransactionType.WITHDRAWAL,
-        description,
-      );
-
-      // Iniciar a saga verificando o saldo da conta
-      await this.commandBus.execute(
-        new CheckAccountBalanceCommand(transactionId, sourceAccountId, amount),
-      );
-
-      this.loggingService.info(
-        `[WithdrawalHandler] Withdrawal saga started for transaction ${transactionId}`,
-      );
-
-      return;
-    } catch (error) {
-      this.loggingService.error(
-        `[WithdrawalHandler] Error starting withdrawal saga: ${error.message}`,
-        { error: error.message, stack: error.stack },
-      );
-
-      throw error;
-    }
-  }
-  */
 }

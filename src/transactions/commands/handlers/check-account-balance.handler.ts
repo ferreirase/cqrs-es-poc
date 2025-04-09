@@ -37,11 +37,13 @@ export class CheckAccountBalanceHandler {
     },
   })
   async handleCheckBalanceCommand(msg: CheckBalanceMessage): Promise<void> {
+    const message = JSON.parse(msg as unknown as string) as CheckBalanceMessage;
+
     const handlerName = 'CheckAccountBalanceHandler';
     const startTime = Date.now();
 
     // Extract data from message
-    const { transactionId, accountId, amount } = msg.payload;
+    const { transactionId, accountId, amount } = message.payload;
 
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
