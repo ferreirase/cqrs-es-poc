@@ -195,6 +195,7 @@ export class TransactionAggregateRepository {
       released: 'onBalanceReleasedEvent',
       confirmed: 'onTransactionConfirmedEvent',
       checked: 'onBalanceCheckedEvent',
+      updated: 'onTransactionStatusUpdatedEvent',
     };
 
     const handler = eventMap[eventType];
@@ -206,5 +207,15 @@ export class TransactionAggregateRepository {
     }
 
     return handler;
+  }
+
+  /**
+   * Busca uma transação pelo ID da transação
+   * Este método é uma wrapper para findById, com o mesmo comportamento
+   */
+  async findOneByTransactionId(
+    transactionId: string,
+  ): Promise<TransactionAggregate> {
+    return this.findById(transactionId);
   }
 }

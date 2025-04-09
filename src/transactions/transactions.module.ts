@@ -3,21 +3,15 @@ import { CqrsModule } from '@nestjs/cqrs';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { AccountsModule } from '../accounts/accounts.module';
+import { AccountEntity } from '../accounts/models/account.entity';
+import { AccountSchema } from '../accounts/models/account.schema';
+import { EventDeduplicationService } from '../common/events/event-deduplication.service';
 import { EventStoreService } from '../common/events/event-store.service';
 import { EventEntity } from '../common/events/event.entity';
 import { RabbitMQModule } from '../common/messaging/rabbitmq.module';
 import { RabbitMQService } from '../common/messaging/rabbitmq.service';
 import { MonitoringModule } from '../common/monitoring/monitoring.module';
-import { TransactionsController } from './controllers/transactions.controller';
-import { TransactionEntity } from './models/transaction.entity';
-import {
-  TransactionDocument,
-  TransactionSchema,
-} from './models/transaction.schema';
-
-import { AccountsModule } from '../accounts/accounts.module';
-import { AccountEntity } from '../accounts/models/account.entity';
-import { AccountSchema } from '../accounts/models/account.schema';
 import { TransactionContextService } from '../transactions/services/transaction-context.service';
 import { UserEntity } from '../users/models/user.entity';
 import { UserSchema } from '../users/models/user.schema';
@@ -25,7 +19,13 @@ import { TransactionAggregate } from './aggregates/transaction.aggregate';
 import { CreateTransactionHandler } from './commands/handlers/create-transaction.handler';
 import { ProcessTransactionHandler as ExistingProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
 import { SagaCommandHandlers } from './commands/handlers/saga-handlers.index';
+import { TransactionsController } from './controllers/transactions.controller';
 import { EventHandlers } from './events/handlers';
+import { TransactionEntity } from './models/transaction.entity';
+import {
+  TransactionDocument,
+  TransactionSchema,
+} from './models/transaction.schema';
 import { GetAccountTransactionsHandler } from './queries/handlers/get-account-transactions.handler';
 import { GetAllTransactionsHandler } from './queries/handlers/get-all-transactions.handler';
 import { GetTransactionHandler } from './queries/handlers/get-transaction.handler';
@@ -62,6 +62,7 @@ const Repositories = [TransactionAggregateRepository];
   ],
   controllers: [TransactionsController],
   providers: [
+    EventDeduplicationService,
     EventStoreService,
     TransactionContextService,
     ExistingProcessTransactionHandler,

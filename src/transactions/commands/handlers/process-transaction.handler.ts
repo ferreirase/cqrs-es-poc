@@ -133,7 +133,7 @@ export class ProcessTransactionHandler {
       }
 
       // Verify source account balance
-      if (sourceAccount.balance < amount) {
+      if (Number(sourceAccount.balance) < Number(amount)) {
         throw new Error(
           `Insufficient balance in source account ${sourceAccountId}`,
         );

@@ -7,6 +7,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
 import { EventEntity } from './common/events/event.entity';
+import { EventsModule } from './common/events/events.module';
 import { RabbitMQService } from './common/messaging/rabbitmq.service';
 import { MonitoringModule } from './common/monitoring/monitoring.module';
 import { TransactionsModule } from './transactions/transactions.module';
@@ -68,6 +69,7 @@ import {
       }),
     }),
     CqrsModule,
+    EventsModule,
     AccountsModule,
     TransactionsModule,
     UsersModule,

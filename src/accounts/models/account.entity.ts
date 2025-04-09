@@ -1,7 +1,15 @@
-import { Column, Entity, JoinColumn, ManyToOne, PrimaryColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryColumn,
+  Unique,
+} from 'typeorm';
 import { UserEntity } from '../../users/models/user.entity';
 
 @Entity('accounts')
+@Unique('unique_owner', ['owner_id'])
 export class AccountEntity {
   @PrimaryColumn()
   id: string;

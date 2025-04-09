@@ -35,6 +35,21 @@ export class CreateAccountHandler
     try {
       const { ownerId, initialBalance } = command;
 
+      // Verificar primeiro se já existe uma conta para este usuário
+      const existingAccount = await this.accountRepository.findOne({
+        where: { owner_id: ownerId },
+      });
+
+      if (existingAccount) {
+        this.loggingService.warn(
+          `[${commandName}] User with ID ${ownerId} already has an account: ${existingAccount.id}`,
+          { existingAccountId: existingAccount.id },
+        );
+
+        throw new Error(`User with ID "${ownerId}" already has an account`);
+      }
+
+      // Criar a conta no banco relacional (PostgreSQL) - lado de comando
       const account = this.accountRepository.create({
         id: uuidv4(),
         owner_id: ownerId,
@@ -42,8 +57,24 @@ export class CreateAccountHandler
         createdAt: new Date(),
       });
 
-      await this.accountRepository.save(account);
+      try {
+        await this.accountRepository.save(account);
+      } catch (saveError) {
+        // Capturar erro de chave única para dar uma mensagem mais clara
+        if (
+          saveError.code === '23505' &&
+          saveError.constraint?.includes('owner_id')
+        ) {
+          this.loggingService.warn(
+            `[${commandName}] Constraint violation: User with ID ${ownerId} already has an account`,
+            { errorCode: saveError.code, constraint: saveError.constraint },
+          );
+          throw new Error(`User with ID "${ownerId}" already has an account`);
+        }
+        throw saveError;
+      }
 
+      // Publicar evento que irá criar a conta no MongoDB (lado de consulta)
       this.eventBus.publish(
         new AccountCreatedEvent(account.id, ownerId, initialBalance),
       );

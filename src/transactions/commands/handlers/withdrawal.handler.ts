@@ -14,6 +14,7 @@ import { TransactionContextService } from '../../services/transaction-context.se
 interface WithdrawalMessage {
   commandName: 'WithdrawalCommand';
   payload: {
+    transactionId: string;
     sourceAccountId: string;
     destinationAccountId: string;
     amount: number;
@@ -42,19 +43,74 @@ export class WithdrawalHandler /* implements ICommandHandler<WithdrawalCommand> 
       durable: true,
     },
   })
-  async handleWithdrawalCommand(msg: WithdrawalMessage): Promise<void> {
+  async handleWithdrawalCommand(msg: any): Promise<void> {
+    const handlerName = 'WithdrawalHandler';
+    const startTime = Date.now();
+
     const queueMessage = JSON.parse(
       msg as unknown as string,
     ) as WithdrawalMessage;
 
-    const handlerName = 'WithdrawalHandler';
-    const startTime = Date.now();
+    // Validação robusta da mensagem recebida
+    if (!queueMessage || typeof queueMessage !== 'object') {
+      this.loggingService.error(
+        `[${handlerName}] Received invalid message format: ${typeof queueMessage}`,
+        { receivedMessage: JSON.stringify(queueMessage) },
+      );
+      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
+      return;
+    }
+
+    // Log da mensagem recebida para debug
+    this.loggingService.info(`[${handlerName}] Received message from queue:`, {
+      receivedMessage: JSON.stringify(queueMessage),
+    });
+
+    // Validar a estrutura da mensagem
+    if (!queueMessage.payload || typeof queueMessage.payload !== 'object') {
+      this.loggingService.error(
+        `[${handlerName}] Missing or invalid payload in message`,
+        { receivedMessage: JSON.stringify(queueMessage) },
+      );
+      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
+      return;
+    }
+
+    // Validar campos obrigatórios
+    const { sourceAccountId, destinationAccountId, amount, description } =
+      queueMessage.payload;
+
+    if (!sourceAccountId || !amount) {
+      this.loggingService.error(
+        `[${handlerName}] Missing required fields in payload`,
+        {
+          receivedPayload: JSON.stringify(queueMessage.payload),
+          sourceAccountId: sourceAccountId || 'MISSING',
+          amount: amount || 'MISSING',
+        },
+      );
+      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
+      return;
+    }
 
     try {
-      const { sourceAccountId, destinationAccountId, amount, description } =
-        queueMessage.payload;
+      // Se já existe um ID na mensagem (reprocessamento), verificar se a transação já existe
+      if (queueMessage.payload.transactionId) {
+        const existingTransaction =
+          await this.transactionAggregateRepository.findOneByTransactionId(
+            queueMessage.payload.transactionId,
+          );
 
-      const transactionId = uuidv4();
+        if (existingTransaction) {
+          this.loggingService.info(
+            `[${handlerName}] Transaction ${queueMessage.payload.transactionId} already exists, skipping processing`,
+            { transactionId: queueMessage.payload.transactionId },
+          );
+          return; // Evita reprocessamento
+        }
+      }
+
+      const transactionId = queueMessage.payload.transactionId || uuidv4();
 
       this.loggingService.logHandlerStart(handlerName, {
         transactionId,

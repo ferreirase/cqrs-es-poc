@@ -15,6 +15,7 @@ import {
   NotificationType,
 } from '../../models/notification.enum';
 import { TransactionEntity } from '../../models/transaction.entity';
+import { TransactionStatus } from '../../models/transaction.schema';
 
 interface NotifyUserMessage {
   commandName: 'NotifyUserCommand';
@@ -52,13 +53,67 @@ export class NotifyUserHandler {
       durable: true,
     },
   })
-  async handleNotifyUserCommand(msg: NotifyUserMessage): Promise<void> {
+  async handleNotifyUserCommand(msg: any): Promise<void> {
     const handlerName = 'NotifyUserHandler';
     const startTime = Date.now();
 
-    const queueMessage = JSON.parse(
-      msg as unknown as string,
-    ) as NotifyUserMessage;
+    // Adicionando logs para depuração
+    this.loggingService.info(
+      `[${handlerName}] RAW MESSAGE RECEIVED: ${JSON.stringify(msg)}`,
+      { type: typeof msg },
+    );
+
+    // Parse seguro: suporta tanto objeto quanto string
+    let queueMessage;
+
+    try {
+      if (typeof msg === 'string') {
+        queueMessage = JSON.parse(msg);
+      } else if (msg && typeof msg === 'object') {
+        if (typeof msg.content === 'object') {
+          // Formato específico do RabbitMQ - @golevelup/nestjs-rabbitmq às vezes envia neste formato
+          const content = msg.content ? msg.content.toString() : '{}';
+          try {
+            queueMessage = JSON.parse(content);
+          } catch (e) {
+            queueMessage = msg; // Fallback - usar o objeto original
+          }
+        } else {
+          queueMessage = msg;
+        }
+      } else {
+        throw new Error(`Unsupported message format: ${typeof msg}`);
+      }
+    } catch (error) {
+      this.loggingService.error(
+        `[${handlerName}] Failed to parse message: ${error.message}`,
+        { originalMessage: JSON.stringify(msg) },
+      );
+      return; // Parar processamento em caso de erro de parsing
+    }
+
+    // Validação robusta da mensagem recebida
+    if (!queueMessage || typeof queueMessage !== 'object') {
+      this.loggingService.error(
+        `[${handlerName}] Received invalid message format: ${typeof queueMessage}`,
+        { receivedMessage: JSON.stringify(queueMessage) },
+      );
+      return;
+    }
+
+    // Verificar se a mensagem é válida
+    if (!queueMessage.payload || typeof queueMessage.payload !== 'object') {
+      this.loggingService.error(
+        `[${handlerName}] Missing or invalid payload in message`,
+        { receivedMessage: JSON.stringify(queueMessage) },
+      );
+      return;
+    }
+
+    // Log adicional para depuração
+    this.loggingService.info(
+      `[${handlerName}] PARSED MESSAGE: ${JSON.stringify(queueMessage)}`,
+    );
 
     const {
       userId,
@@ -70,11 +125,53 @@ export class NotifyUserHandler {
       details,
     } = queueMessage.payload;
 
-    const amount = details.amount;
+    // Validar campos obrigatórios
+    if (!userId || !transactionId || !accountId) {
+      this.loggingService.error(
+        `[${handlerName}] Missing required fields in payload`,
+        {
+          receivedPayload: JSON.stringify(queueMessage.payload),
+          userId: userId || 'MISSING',
+          transactionId: transactionId || 'MISSING',
+          accountId: accountId || 'MISSING',
+        },
+      );
+      return;
+    }
+
+    const amount = details?.amount;
 
     this.loggingService.logHandlerStart(handlerName, {
       ...queueMessage.payload,
     });
+
+    // Verificar se já existe uma notificação para este usuário/transação
+    // para evitar duplicação
+    try {
+      // Verificar em algum registro existente se a notificação já foi enviada
+      // Aqui você pode adicionar uma verificação na sua tabela de notificações
+      // ou em outro mecanismo de rastreamento para ver se essa
+      // combinação específica de usuário/transação já foi notificada
+
+      // Por simplicidade, vamos usar uma verificação básica aqui
+      const existingTransaction =
+        await this.transactionEntityRepository.findOne({
+          where: { id: transactionId },
+        });
+
+      if (existingTransaction?.status === TransactionStatus.COMPLETED) {
+        this.loggingService.info(
+          `[${handlerName}] Transaction ${transactionId} is already COMPLETED, skipping notification for user ${userId}`,
+        );
+        return;
+      }
+    } catch (error) {
+      this.loggingService.warn(
+        `[${handlerName}] Error checking notification status: ${error.message}`,
+        { error: error.stack },
+      );
+      // Continuar mesmo com erro na verificação
+    }
 
     let notificationSuccess = false;
     let notificationError: string | undefined = undefined;
@@ -193,22 +290,23 @@ export class NotifyUserHandler {
     userName: string,
     type: NotificationType,
     status: NotificationStatus,
-    amount: number,
+    amount?: number,
   ): string {
-    if (status === NotificationStatus.FAILED) {
-      return `Olá, ${userName}. Sua transação de ${
-        type === NotificationType.WITHDRAWAL ? 'saque' : 'depósito'
-      } no valor de R$ ${amount.toFixed(2)} falhou.`;
-    }
-
-    if (type === NotificationType.WITHDRAWAL) {
-      return `Olá, ${userName}. Um saque de R$ ${amount.toFixed(
-        2,
-      )} foi realizado com sucesso em sua conta.`;
+    if (status === NotificationStatus.SUCCESS) {
+      switch (type) {
+        case NotificationType.WITHDRAWAL:
+          return `Olá ${userName}, seu saque ${
+            amount ? `de ${amount}` : ''
+          } foi processado com sucesso.`;
+        case NotificationType.DEPOSIT:
+          return `Olá ${userName}, seu depósito ${
+            amount ? `de ${amount}` : ''
+          } foi processado com sucesso.`;
+        default:
+          return `Olá ${userName}, sua transação foi processada com sucesso.`;
+      }
     } else {
-      return `Olá, ${userName}. Uma operação de R$ ${amount.toFixed(
-        2,
-      )} foi realizada com sucesso em sua conta.`;
+      return `Olá ${userName}, ocorreu um erro ao processar sua transação.`;
     }
   }
 }

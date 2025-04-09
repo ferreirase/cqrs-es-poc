@@ -12,6 +12,7 @@ import { TransactionConfirmedEvent } from '../../transactions/events/impl/transa
 import { TransactionCreatedEvent } from '../../transactions/events/impl/transaction-created.event';
 import { TransactionProcessedEvent } from '../../transactions/events/impl/transaction-processed.event';
 import { UserNotifiedEvent } from '../../transactions/events/impl/user-notified.event';
+import { EventDeduplicationService } from './event-deduplication.service';
 import { EventEntity } from './event.entity';
 import { IEvent } from './event.interface';
 
@@ -160,6 +161,7 @@ export class EventStoreService
   constructor(
     @InjectRepository(EventEntity)
     private eventRepository: Repository<EventEntity>,
+    private eventDeduplicationService: EventDeduplicationService,
   ) {
     // Inicializa o mapa de estratégias
     this.strategyMap = new Map<Function, EventHandlingStrategy>([
@@ -247,41 +249,52 @@ export class EventStoreService
   }
 
   async saveEvent(
-    eventType: string,
+    type: string,
     data: any,
     aggregateId: string,
-  ): Promise<IEvent> {
-    const event: IEvent = {
-      id: uuidv4(),
-      type: eventType,
-      timestamp: new Date(),
-      data: data,
-    };
+  ): Promise<EventEntity | null> {
+    // Verificar se este evento é duplicado
+    // Para UserNotifiedEvent, incluir o userId como parte da chave de deduplicação
+    if (data.constructor?.name === 'UserNotifiedEvent') {
+      const additionalKey = `${data.userId}:${data.accountId}`;
+      if (
+        this.eventDeduplicationService.isDuplicate(
+          type,
+          aggregateId,
+          additionalKey,
+        )
+      ) {
+        this.logger.warn(
+          `[EventStoreService] Detected duplicate event ${type} for user ${data.userId}, transaction ${aggregateId}. Skipping.`,
+        );
+        return null; // Retorna null para indicar que o evento foi ignorado
+      }
+    }
+    // Para todos os outros tipos de eventos
+    else if (this.eventDeduplicationService.isDuplicate(type, aggregateId)) {
+      this.logger.warn(
+        `[EventStoreService] Detected duplicate event ${type} for aggregate ${aggregateId}. Skipping.`,
+      );
+      return null; // Retorna null para indicar que o evento foi ignorado
+    }
+
+    // Se não for duplicado, proceder com o salvamento normal
+    const event = new EventEntity();
+    event.id = uuidv4();
+    event.type = type;
+    event.data = data;
+    event.aggregateId = aggregateId;
+    event.timestamp = new Date();
 
     try {
+      const savedEvent = await this.eventRepository.save(event);
       this.logger.debug(
-        `[EventStoreService] Attempting to save event: ${eventType} for aggregate: ${aggregateId}`,
-        event.id,
+        `[EventStoreService] Event ${type} saved for aggregate ${aggregateId}`,
       );
-
-      const eventEntity = this.eventRepository.create({
-        id: event.id,
-        type: eventType,
-        timestamp: event.timestamp,
-        data: JSON.stringify(data),
-        aggregateId,
-      });
-
-      await this.eventRepository.save(eventEntity);
-
-      this.logger.debug(
-        `[EventStoreService] Successfully saved event: ${eventType} with ID: ${event.id} for aggregate ${aggregateId}`,
-      );
-
-      return event;
+      return savedEvent;
     } catch (error) {
       this.logger.error(
-        `[EventStoreService] Error saving event ${eventType} for aggregate ${aggregateId} (ID: ${event.id}): ${error.message}`,
+        `[EventStoreService] Error saving event ${type} for aggregate ${aggregateId}: ${error.message}`,
         error.stack,
       );
       throw error;

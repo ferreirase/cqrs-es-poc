@@ -38,20 +38,26 @@ export class AccountsController {
         throw new BadRequestException('Invalid owner UUID');
       }
 
-      const account = await this.queryBus.execute(
-        new GetAccountQuery(createAccountDto.ownerId),
-      );
+      // Verificar diretamente no repositório relacional se já existe uma conta para este usuário
+      try {
+        // Verificar a existência do usuário na tabela de usuários (opcional)
 
-      if (account) {
-        throw new BadRequestException('Account already exists');
+        // Verificar se o usuário já possui uma conta no banco relacional (PostgreSQL)
+        const command = new CreateAccountCommand(
+          createAccountDto.ownerId,
+          createAccountDto.initialBalance || 0,
+        );
+
+        return await this.commandBus.execute(command);
+      } catch (error) {
+        if (error.code === '23505' && error.constraint?.includes('owner_id')) {
+          // Este é o erro de unique constraint do PostgreSQL
+          throw new BadRequestException(
+            `User with ID "${createAccountDto.ownerId}" already has an account`,
+          );
+        }
+        throw error;
       }
-
-      const command = new CreateAccountCommand(
-        createAccountDto.ownerId,
-        createAccountDto.initialBalance || 0,
-      );
-
-      return this.commandBus.execute(command);
     } catch (error) {
       console.error(error);
       throw new BadRequestException(`Error creating account: ${error.message}`);

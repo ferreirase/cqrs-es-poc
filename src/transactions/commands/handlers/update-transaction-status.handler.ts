@@ -42,10 +42,19 @@ export class UpdateTransactionStatusHandler
         this.loggingService.warn(
           `[UpdateTransactionStatusHandler] Transaction ${transactionId} not found in command database`,
         );
-      } else {
+        return; // Não prosseguir se a transação não existir
+      }
+
+      this.loggingService.info(
+        `[UpdateTransactionStatusHandler] Found transaction ${transactionId} with current status: ${transaction.status}`,
+      );
+
+      // Verificar se o status já é o mesmo para evitar atualizações desnecessárias
+      if (transaction.status === status) {
         this.loggingService.info(
-          `[UpdateTransactionStatusHandler] Found transaction ${transactionId} with current status: ${transaction.status}`,
+          `[UpdateTransactionStatusHandler] Transaction ${transactionId} already has status ${status}, skipping update`,
         );
+        return; // Evita processamento duplicado
       }
 
       // 2. Atualizar do lado do Command (TypeORM)
@@ -80,30 +89,37 @@ export class UpdateTransactionStatusHandler
           `[UpdateTransactionStatusHandler] Query transaction current status before update: ${queryTransaction.status}`,
         );
 
-        // Atualizar o documento no MongoDB
-        const queryUpdateData: any = { status };
+        // Verificar se o status no lado query já é o mesmo
+        if (queryTransaction.status === status) {
+          this.loggingService.info(
+            `[UpdateTransactionStatusHandler] Query-side transaction ${transactionId} already has status ${status}, skipping query update`,
+          );
+        } else {
+          // Atualizar o documento no MongoDB
+          const queryUpdateData: any = { status };
 
-        if (processedAt) {
-          queryUpdateData.processedAt = processedAt;
+          if (processedAt) {
+            queryUpdateData.processedAt = processedAt;
+          }
+
+          if (error) {
+            queryUpdateData.error = error;
+          }
+
+          const queryResult = await this.transactionModel.findOneAndUpdate(
+            { id: transactionId },
+            { $set: queryUpdateData },
+            { new: true },
+          );
+
+          this.loggingService.info(
+            `[UpdateTransactionStatusHandler] Query side updated for transaction ${transactionId}`,
+            {
+              previousStatus: queryTransaction.status,
+              newStatus: queryResult.status,
+            },
+          );
         }
-
-        if (error) {
-          queryUpdateData.error = error;
-        }
-
-        const queryResult = await this.transactionModel.findOneAndUpdate(
-          { id: transactionId },
-          { $set: queryUpdateData },
-          { new: true },
-        );
-
-        this.loggingService.info(
-          `[UpdateTransactionStatusHandler] Query side updated for transaction ${transactionId}`,
-          {
-            previousStatus: queryTransaction.status,
-            newStatus: queryResult.status,
-          },
-        );
       }
 
       // 4. Criar e publicar o evento de atualização de status

@@ -9,7 +9,7 @@ export class AccountBalanceUpdatedHandler
   implements IEventHandler<AccountBalanceUpdatedEvent>
 {
   constructor(
-    @InjectModel('AccountDocument')
+    @InjectModel(AccountDocument.name)
     private accountModel: Model<AccountDocument>,
   ) {
     console.log('AccountBalanceUpdatedHandler initialized');

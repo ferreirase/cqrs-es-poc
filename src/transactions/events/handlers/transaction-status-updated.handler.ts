@@ -50,6 +50,19 @@ export class TransactionStatusUpdatedHandler
         `[TransactionStatusUpdatedHandler] Current status for transaction ${id}`,
       );
 
+      // Verificar se o status já é o mesmo que estamos tentando atualizar
+      if (
+        transactionQuerySide &&
+        transactionQuerySide.status === status &&
+        transactionCommandSide &&
+        transactionCommandSide.status === status
+      ) {
+        this.loggingService.info(
+          `[TransactionStatusUpdatedHandler] Transaction ${id} already has status ${status}, skipping redundant update`,
+        );
+        return; // Evita processamento duplicado
+      }
+
       // Atualiza os campos da transação
       const updateData: any = { status };
 
