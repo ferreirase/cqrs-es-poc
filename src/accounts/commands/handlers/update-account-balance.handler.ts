@@ -28,18 +28,25 @@ export class UpdateAccountBalanceHandler
       throw new NotFoundException(`Account with ID "${accountId}" not found`);
     }
 
-    const previousBalance = account.balance;
-    account.balance = Number(account.balance) + Number(amount);
+    const previousBalance = parseFloat(account.balance.toString());
+    const amountNum = parseFloat(amount.toString());
+
+    // Garantir que estamos trabalhando com números
+    account.balance = previousBalance + amountNum;
     account.updatedAt = new Date();
 
     await this.accountRepository.save(account);
+
+    console.log(
+      `Account command model updated: ${accountId} to balance ${account.balance}`,
+    );
 
     this.eventBus.publish(
       new AccountBalanceUpdatedEvent(
         account.id,
         previousBalance,
         account.balance,
-        amount,
+        amountNum,
       ),
     );
 

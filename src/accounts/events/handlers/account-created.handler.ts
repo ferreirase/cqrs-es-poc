@@ -9,20 +9,31 @@ export class AccountCreatedHandler
   implements IEventHandler<AccountCreatedEvent>
 {
   constructor(
-    @InjectModel(AccountDocument.name)
+    @InjectModel('AccountDocument')
     private accountModel: Model<AccountDocument>,
-  ) {}
+  ) {
+    console.log('AccountCreatedHandler initialized');
+  }
 
   async handle(event: AccountCreatedEvent) {
+    console.log(
+      `[AccountCreatedHandler] Handling event: ${JSON.stringify(event)}`,
+    );
+
     const { id, owner, initialBalance } = event;
 
-    await this.accountModel.create({
-      id,
-      owner,
-      balance: initialBalance,
-      createdAt: new Date(),
-    });
+    try {
+      const createdAccount = await this.accountModel.create({
+        id,
+        owner,
+        balance: initialBalance,
+        createdAt: new Date(),
+      });
 
-    console.log(`Account read model created: ${id}`);
+      console.log(`Account read model created: ${id}`, createdAccount);
+    } catch (error) {
+      console.error(`Error creating account read model: ${error.message}`);
+      throw error;
+    }
   }
 }

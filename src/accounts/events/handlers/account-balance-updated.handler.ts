@@ -9,23 +9,42 @@ export class AccountBalanceUpdatedHandler
   implements IEventHandler<AccountBalanceUpdatedEvent>
 {
   constructor(
-    @InjectModel(AccountDocument.name)
+    @InjectModel('AccountDocument')
     private accountModel: Model<AccountDocument>,
-  ) {}
+  ) {
+    console.log('AccountBalanceUpdatedHandler initialized');
+  }
 
   async handle(event: AccountBalanceUpdatedEvent) {
-    const { accountId, newBalance } = event;
-
-    await this.accountModel.findOneAndUpdate(
-      { id: accountId },
-      {
-        $set: {
-          balance: newBalance,
-          updatedAt: new Date(),
-        },
-      },
+    console.log(
+      `[AccountBalanceUpdatedHandler] Handling event: ${JSON.stringify(event)}`,
     );
 
-    console.log(`Account read model updated: ${accountId}`);
+    const { accountId, newBalance } = event;
+
+    try {
+      const result = await this.accountModel.findOneAndUpdate(
+        { id: accountId },
+        {
+          $set: {
+            balance: newBalance,
+            updatedAt: new Date(),
+          },
+        },
+        { new: true },
+      );
+
+      if (!result) {
+        console.error(`Account not found for update: ${accountId}`);
+      } else {
+        console.log(
+          `Account read model updated: ${accountId} to balance ${newBalance}`,
+          result,
+        );
+      }
+    } catch (error) {
+      console.error(`Error updating account read model: ${error.message}`);
+      throw error;
+    }
   }
 }

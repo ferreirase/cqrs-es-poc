@@ -64,6 +64,7 @@ export class CreateTransactionHandler
 
       await this.transactionRepository.save(transaction);
 
+      // Criar e publicar o evento
       const event = new TransactionCreatedEvent(
         transaction.id,
         transaction.sourceAccountId,
@@ -71,6 +72,13 @@ export class CreateTransactionHandler
         transaction.amount,
         transaction.type,
         transaction.description,
+      );
+
+      // Log antes de publicar o evento
+      this.loggingService.info(
+        `[CreateTransactionHandler] Publishing TransactionCreatedEvent: ${JSON.stringify(
+          event,
+        )}`,
       );
 
       this.eventBus.publish(event);

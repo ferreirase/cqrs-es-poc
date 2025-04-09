@@ -2,15 +2,17 @@ import { NotFoundException } from '@nestjs/common';
 import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { AccountBalanceUpdatedEvent } from '../../../accounts/events/impl/account-balance-updated.event';
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ProcessTransactionCommand } from '../../commands/impl/process-transaction.command';
 import { TransactionProcessedEvent } from '../../events/impl/transaction-processed.event';
 import {
+  TransactionStatus as EntityTransactionStatus,
   TransactionEntity,
-  TransactionStatus,
   TransactionType,
 } from '../../models/transaction.entity';
+import { TransactionStatus } from '../../models/transaction.schema';
 
 @CommandHandler(ProcessTransactionCommand)
 export class ProcessTransactionHandler
@@ -79,11 +81,16 @@ export class ProcessTransactionHandler
         );
       }
 
+      // Armazenar saldos anteriores para os eventos
+      const sourcePreviousBalance = sourceAccount.balance;
+      const destPreviousBalance = destinationAccount.balance;
+
       // Atualizar saldo das contas
-      sourceAccount.balance -= amount;
+      sourceAccount.balance = Number(sourceAccount.balance) - Number(amount);
       sourceAccount.updatedAt = new Date();
 
-      destinationAccount.balance += amount;
+      destinationAccount.balance =
+        Number(destinationAccount.balance) + Number(amount);
       destinationAccount.updatedAt = new Date();
 
       // Salvar as alterações nas contas
@@ -98,7 +105,7 @@ export class ProcessTransactionHandler
         });
 
       if (transaction) {
-        transaction.status = TransactionStatus.PROCESSED;
+        transaction.status = EntityTransactionStatus.PROCESSED;
         transaction.destinationAccountId = destinationAccountId;
         transaction.description = description;
         transaction.updatedAt = new Date();
@@ -110,7 +117,7 @@ export class ProcessTransactionHandler
           sourceAccountId,
           destinationAccountId,
           amount,
-          status: TransactionStatus.PROCESSED,
+          status: EntityTransactionStatus.PROCESSED,
           type: TransactionType.WITHDRAWAL,
           description,
           createdAt: new Date(),
@@ -120,6 +127,26 @@ export class ProcessTransactionHandler
 
       // Commit da transação
       await queryRunner.commitTransaction();
+
+      // Publicar evento para atualizar o modelo de leitura da conta de origem
+      this.eventBus.publish(
+        new AccountBalanceUpdatedEvent(
+          sourceAccountId,
+          sourcePreviousBalance,
+          sourceAccount.balance,
+          -amount,
+        ),
+      );
+
+      // Publicar evento para atualizar o modelo de leitura da conta de destino
+      this.eventBus.publish(
+        new AccountBalanceUpdatedEvent(
+          destinationAccountId,
+          destPreviousBalance,
+          destinationAccount.balance,
+          amount,
+        ),
+      );
 
       // Publicar evento indicando que a transação foi processada com sucesso
       this.eventBus.publish(
@@ -131,6 +158,7 @@ export class ProcessTransactionHandler
           true,
           description,
           TransactionStatus.PROCESSED,
+          TransactionType.WITHDRAWAL,
         ),
       );
 
@@ -155,6 +183,7 @@ export class ProcessTransactionHandler
           false,
           description,
           TransactionStatus.FAILED,
+          TransactionType.WITHDRAWAL,
         ),
       );
 

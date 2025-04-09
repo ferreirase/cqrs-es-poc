@@ -10,7 +10,7 @@ import { AccountsController } from './controllers/accounts.controller';
 import { AccountBalanceUpdatedHandler } from './events/handlers/account-balance-updated.handler';
 import { AccountCreatedHandler } from './events/handlers/account-created.handler';
 import { AccountEntity } from './models/account.entity';
-import { AccountDocument, AccountSchema } from './models/account.schema';
+import { AccountSchema } from './models/account.schema';
 import { GetAccountBalanceHandler } from './queries/handlers/get-account-balance.handler';
 import { GetAccountHandler } from './queries/handlers/get-account.handler';
 import { GetAccountsHandler } from './queries/handlers/get-accounts.handler';
@@ -19,7 +19,7 @@ import { GetAccountsHandler } from './queries/handlers/get-accounts.handler';
   imports: [
     TypeOrmModule.forFeature([AccountEntity]),
     MongooseModule.forFeature([
-      { name: AccountDocument.name, schema: AccountSchema },
+      { name: 'AccountDocument', schema: AccountSchema },
     ]),
     CqrsModule,
     MonitoringModule,

@@ -12,11 +12,17 @@ export class TransactionCreatedHandler
   implements IEventHandler<TransactionCreatedEvent>
 {
   constructor(
-    @InjectModel(TransactionDocument.name)
+    @InjectModel('TransactionDocument')
     private transactionModel: Model<TransactionDocument>,
-  ) {}
+  ) {
+    console.log('TransactionCreatedHandler initialized');
+  }
 
   async handle(event: TransactionCreatedEvent) {
+    console.log(
+      `[TransactionCreatedHandler] Handling event: ${JSON.stringify(event)}`,
+    );
+
     const {
       id,
       sourceAccountId,
@@ -26,17 +32,22 @@ export class TransactionCreatedHandler
       description,
     } = event;
 
-    await this.transactionModel.create({
-      id,
-      sourceAccountId,
-      destinationAccountId,
-      amount,
-      type,
-      status: TransactionStatus.PENDING,
-      description,
-      createdAt: new Date(),
-    });
+    try {
+      const createdTransaction = await this.transactionModel.create({
+        id,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        type,
+        status: TransactionStatus.PENDING,
+        description,
+        createdAt: new Date(),
+      });
 
-    console.log(`Transaction read model created: ${id}`);
+      console.log(`Transaction read model created: ${id}`, createdTransaction);
+    } catch (error) {
+      console.error(`Error creating transaction read model: ${error.message}`);
+      throw error;
+    }
   }
 }
