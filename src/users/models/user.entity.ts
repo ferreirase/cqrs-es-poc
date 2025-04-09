@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, OneToOne, PrimaryColumn } from 'typeorm';
+import { Column, Entity, OneToMany, PrimaryColumn } from 'typeorm';
 import { AccountEntity } from '../../accounts/models/account.entity';
 
 @Entity('users')
@@ -21,10 +21,6 @@ export class UserEntity {
   @Column({ nullable: true })
   updatedAt: Date;
 
-  @OneToOne(() => AccountEntity)
-  @JoinColumn()
-  account: AccountEntity;
-
-  @Column({ nullable: true })
-  accountId: string;
+  @OneToMany(() => AccountEntity, account => account.owner)
+  accounts: AccountEntity[];
 }

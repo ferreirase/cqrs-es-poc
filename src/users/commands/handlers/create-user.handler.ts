@@ -32,7 +32,7 @@ export class CreateUserHandler implements ICommandHandler<CreateUserCommand> {
     });
 
     try {
-      const { id, name, document, email, accountId } = command;
+      const { id, name, document, email } = command;
       const userId = id || uuidv4();
 
       const user = this.userRepository.create({
@@ -40,30 +40,24 @@ export class CreateUserHandler implements ICommandHandler<CreateUserCommand> {
         name,
         document,
         email,
-        accountId,
         createdAt: new Date(),
       });
 
       await this.userRepository.save(user);
 
       this.eventBus.publish(
-        new UserCreatedEvent(
-          user.id,
-          user.name,
-          user.document,
-          user.email,
-          user.accountId,
-        ),
+        new UserCreatedEvent(user.id, user.name, user.document, user.email),
       );
-
       // Publish the event to RabbitMQ
       this.rabbitMQService.publish('events', 'user.created', user);
 
       // Registrar métricas de sucesso
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.prometheusService
         .getCounter('commands_total')
         .inc({ command: commandName, status: 'success' }, 1);
+
       this.prometheusService
         .getHistogram('command_duration_seconds')
         .observe({ command: commandName }, executionTime);

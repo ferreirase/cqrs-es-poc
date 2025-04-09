@@ -37,10 +37,7 @@ export class TransactionsController {
   ) {}
 
   @Post()
-  async createTransaction(
-    @Body() createTransactionDto: CreateTransactionDto,
-    @Req() request: Request,
-  ) {
+  async createTransaction(@Body() createTransactionDto: CreateTransactionDto) {
     const startTime = Date.now();
     const route = 'POST /transactions';
 
@@ -284,10 +281,7 @@ export class TransactionsController {
   }
 
   @Post('withdrawal')
-  async withdrawal(
-    @Body() withdrawalDto: WithdrawalDto,
-    @Req() request: Request,
-  ) {
+  async withdrawal(@Body() withdrawalDto: WithdrawalDto) {
     const startTime = Date.now();
     const route = 'POST /transactions/withdrawal';
 
@@ -371,7 +365,7 @@ export class TransactionsController {
   }
 
   @Get('')
-  async getAllTransactions(@Req() request: Request) {
+  async getAllTransactions() {
     const startTime = Date.now();
     const route = 'GET /transactions';
 

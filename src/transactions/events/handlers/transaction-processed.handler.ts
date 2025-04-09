@@ -14,10 +14,10 @@ export class TransactionProcessedHandler
   ) {}
 
   async handle(event: TransactionProcessedEvent) {
-    const { id, status, error } = event;
+    const { transactionId, status, error } = event;
 
     await this.transactionModel.findOneAndUpdate(
-      { id },
+      { id: transactionId },
       {
         $set: {
           status,
@@ -27,6 +27,8 @@ export class TransactionProcessedHandler
       },
     );
 
-    console.log(`Transaction read model updated: ${id} with status ${status}`);
+    console.log(
+      `Transaction read model updated: ${transactionId} with status ${status}`,
+    );
   }
 }

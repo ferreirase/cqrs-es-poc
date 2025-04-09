@@ -41,6 +41,7 @@ export class ProcessTransactionHandler
     const queryRunner =
       this.accountRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
+
     await queryRunner.startTransaction();
 
     try {
@@ -129,6 +130,7 @@ export class ProcessTransactionHandler
           amount,
           true,
           description,
+          TransactionStatus.PROCESSED,
         ),
       );
 
@@ -152,6 +154,7 @@ export class ProcessTransactionHandler
           amount,
           false,
           description,
+          TransactionStatus.FAILED,
         ),
       );
 

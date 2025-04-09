@@ -28,17 +28,16 @@ export class CreateAccountHandler
 
     // Log início do comando
     this.loggingService.logHandlerStart(commandName, {
-      owner: command.owner,
+      owner: command.ownerId,
       initialBalance: command.initialBalance,
     });
 
     try {
-      const { id, owner, initialBalance } = command;
-      const accountId = id || uuidv4();
+      const { ownerId, initialBalance } = command;
 
       const account = this.accountRepository.create({
-        id: accountId,
-        owner,
+        id: uuidv4(),
+        owner_id: ownerId,
         balance: initialBalance,
         createdAt: new Date(),
       });
@@ -46,17 +45,24 @@ export class CreateAccountHandler
       await this.accountRepository.save(account);
 
       this.eventBus.publish(
-        new AccountCreatedEvent(account.id, owner, initialBalance),
+        new AccountCreatedEvent(account.id, ownerId, initialBalance),
       );
 
       // Publish the event to RabbitMQ
-      this.rabbitMQService.publish('events', 'account.created', account);
+      this.rabbitMQService.publish('events', 'account.created', {
+        id: account.id,
+        owner_id: ownerId,
+        balance: initialBalance,
+        createdAt: account.createdAt,
+      });
 
       // Registrar métricas de sucesso
       const executionTime = (Date.now() - startTime) / 1000;
+
       this.prometheusService
         .getCounter('commands_total')
         .inc({ command: commandName, status: 'success' }, 1);
+
       this.prometheusService
         .getHistogram('command_duration_seconds')
         .observe({ command: commandName }, executionTime);

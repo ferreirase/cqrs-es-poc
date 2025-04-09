@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -15,7 +16,7 @@ import { GetAccountQuery } from '../queries/impl/get-account.query';
 import { GetAccountsQuery } from '../queries/impl/get-accounts.query';
 
 class CreateAccountDto {
-  owner: string;
+  ownerId: string;
   initialBalance?: number;
 }
 
@@ -32,13 +33,29 @@ export class AccountsController {
 
   @Post()
   async createAccount(@Body() createAccountDto: CreateAccountDto) {
-    const command = new CreateAccountCommand(
-      null,
-      createAccountDto.owner,
-      createAccountDto.initialBalance || 0,
-    );
+    try {
+      if (!isValidUUID(createAccountDto.ownerId)) {
+        throw new BadRequestException('Invalid owner UUID');
+      }
 
-    return this.commandBus.execute(command);
+      const account = await this.queryBus.execute(
+        new GetAccountQuery(createAccountDto.ownerId),
+      );
+
+      if (account) {
+        throw new BadRequestException('Account already exists');
+      }
+
+      const command = new CreateAccountCommand(
+        createAccountDto.ownerId,
+        createAccountDto.initialBalance || 0,
+      );
+
+      return this.commandBus.execute(command);
+    } catch (error) {
+      console.error(error);
+      throw new BadRequestException(`Error creating account: ${error.message}`);
+    }
   }
 
   @Get()
@@ -84,4 +101,15 @@ export class AccountsController {
 
     return this.commandBus.execute(command);
   }
+}
+
+/**
+ * Verifica se o owner é um UUID válido
+ * @param ownerId UUID do owner
+ * @returns true se for um UUID válido, false caso contrário
+ */
+function isValidUUID(ownerId: string) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    ownerId,
+  );
 }

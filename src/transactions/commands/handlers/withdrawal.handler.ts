@@ -23,6 +23,7 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
   async execute(command: WithdrawalCommand): Promise<void> {
     const { id, sourceAccountId, destinationAccountId, amount, description } =
       command;
+
     const transactionId = id || uuidv4();
 
     this.loggingService.info(
@@ -45,7 +46,7 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
 
     // Iniciar a saga verificando o saldo da conta
     // Este é o primeiro passo da saga, que desencadeará todos os outros
-    await this.commandBus.execute(
+    this.commandBus.execute(
       new CheckAccountBalanceCommand(transactionId, sourceAccountId, amount),
     );
 
@@ -59,6 +60,7 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
     this.loggingService.error(
       `[WithdrawalHandler] Error starting withdrawal saga: ${error.message}`,
     );
+
     throw error;
   }
 }

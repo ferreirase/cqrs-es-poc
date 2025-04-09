@@ -1,4 +1,3 @@
-import { NotFoundException } from '@nestjs/common';
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -13,12 +12,6 @@ export class GetAccountHandler implements IQueryHandler<GetAccountQuery> {
   ) {}
 
   async execute(query: GetAccountQuery) {
-    const account = await this.accountModel.findOne({ id: query.id }).exec();
-
-    if (!account) {
-      throw new NotFoundException(`Account with ID "${query.id}" not found`);
-    }
-
-    return account;
+    return await this.accountModel.findOne({ id: query.id }).exec();
   }
 }

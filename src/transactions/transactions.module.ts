@@ -21,7 +21,6 @@ import {
   AccountSchema,
 } from '../accounts/models/account.schema';
 import { TransactionContextService } from '../transactions/services/transaction-context.service';
-import { TransactionSchedulerService } from '../transactions/services/transaction-scheduler.service';
 import { UserEntity } from '../users/models/user.entity';
 import { UserDocument, UserSchema } from '../users/models/user.schema';
 import { CreateTransactionHandler } from './commands/handlers/create-transaction.handler';
@@ -64,7 +63,6 @@ const Sagas = [WithdrawalSaga];
   controllers: [TransactionsController],
   providers: [
     EventStoreService,
-    TransactionSchedulerService,
     TransactionContextService,
     ExistingProcessTransactionHandler,
     ...EventHandlers,

@@ -76,7 +76,7 @@ export class CreateTransactionHandler
       this.eventBus.publish(event);
 
       // Publicar no RabbitMQ com metadados adicionais de métricas
-      await this.rabbitMQService.publish('events', 'transaction.created', {
+      this.rabbitMQService.publish('events', 'transaction.created', {
         ...transaction,
         processingMetadata: {
           startTime,

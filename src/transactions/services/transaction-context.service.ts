@@ -88,6 +88,7 @@ export class TransactionContextService {
    */
   async loadAccountUserDetails(transactionId: string): Promise<void> {
     const context = this.getTransactionContext(transactionId);
+
     if (!context) return;
 
     try {
@@ -96,10 +97,12 @@ export class TransactionContextService {
         const sourceAccount = await this.accountModel.findOne({
           id: context.sourceAccountId,
         });
+
         if (sourceAccount && sourceAccount.owner) {
           const sourceUser = await this.userModel.findOne({
             id: sourceAccount.owner,
           });
+
           if (sourceUser) {
             await this.setTransactionContext(transactionId, {
               sourceUserId: sourceUser.id,
@@ -115,10 +118,12 @@ export class TransactionContextService {
         const destAccount = await this.accountModel.findOne({
           id: context.destinationAccountId,
         });
+
         if (destAccount && destAccount.owner) {
           const destUser = await this.userModel.findOne({
             id: destAccount.owner,
           });
+
           if (destUser) {
             await this.setTransactionContext(transactionId, {
               destinationUserId: destUser.id,

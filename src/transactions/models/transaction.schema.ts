@@ -53,6 +53,9 @@ export class TransactionDocument extends Document {
 
   @Prop()
   processedAt: Date;
+
+  @Prop()
+  error: string;
 }
 
 export const TransactionSchema =
