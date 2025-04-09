@@ -253,32 +253,62 @@ export class EventStoreService
     data: any,
     aggregateId: string,
   ): Promise<EventEntity | null> {
-    // Verificar se este evento é duplicado
-    // Para UserNotifiedEvent, incluir o userId como parte da chave de deduplicação
+    let duplicateCheckKey = '';
+    let eventSpecificId = '';
+
+    // Determinar a chave de deduplicação e ID específico
     if (data.constructor?.name === 'UserNotifiedEvent') {
       const additionalKey = `${data.userId}:${data.accountId}`;
-      if (
-        this.eventDeduplicationService.isDuplicate(
-          type,
-          aggregateId,
-          additionalKey,
-        )
-      ) {
-        this.logger.warn(
-          `[EventStoreService] Detected duplicate event ${type} for user ${data.userId}, transaction ${aggregateId}. Skipping.`,
-        );
-        return null; // Retorna null para indicar que o evento foi ignorado
-      }
-    }
-    // Para todos os outros tipos de eventos
-    else if (this.eventDeduplicationService.isDuplicate(type, aggregateId)) {
-      this.logger.warn(
-        `[EventStoreService] Detected duplicate event ${type} for aggregate ${aggregateId}. Skipping.`,
+      eventSpecificId = `User:${data.userId}, Acc:${data.accountId}`;
+      duplicateCheckKey = this.eventDeduplicationService.generateEventKey(
+        type,
+        aggregateId,
+        additionalKey,
       );
-      return null; // Retorna null para indicar que o evento foi ignorado
+    } else if (data.constructor?.name === 'StatementUpdatedEvent') {
+      const additionalKey = data.accountId;
+      eventSpecificId = `Acc:${data.accountId}`;
+      duplicateCheckKey = this.eventDeduplicationService.generateEventKey(
+        type,
+        aggregateId,
+        additionalKey,
+      );
+    } else if (data.constructor?.name === 'AccountBalanceUpdatedEvent') {
+      const additionalKey = data.accountId;
+      eventSpecificId = `Acc:${data.accountId}`;
+      duplicateCheckKey = this.eventDeduplicationService.generateEventKey(
+        type,
+        aggregateId,
+        additionalKey,
+      );
+    } else {
+      eventSpecificId = `Tx:${aggregateId}`;
+      duplicateCheckKey = this.eventDeduplicationService.generateEventKey(
+        type,
+        aggregateId,
+      );
     }
 
-    // Se não for duplicado, proceder com o salvamento normal
+    // Verificar duplicidade ou intenção de processamento
+    if (
+      this.eventDeduplicationService.isDuplicateOrProcessing(
+        type,
+        aggregateId,
+        // Passar additionalKey específico para os tipos relevantes
+        data.constructor?.name === 'UserNotifiedEvent'
+          ? `${data.userId}:${data.accountId}`
+          : data.constructor?.name === 'StatementUpdatedEvent'
+          ? data.accountId
+          : data.constructor?.name === 'AccountBalanceUpdatedEvent'
+          ? data.accountId
+          : undefined, // Nenhum additionalKey para outros tipos
+      )
+    ) {
+      // Log já é feito dentro de isDuplicateOrProcessing
+      return null;
+    }
+
+    // Se não for duplicado nem estiver sendo processado, tentar salvar
     const event = new EventEntity();
     event.id = uuidv4();
     event.type = type;
@@ -288,14 +318,32 @@ export class EventStoreService
 
     try {
       const savedEvent = await this.eventRepository.save(event);
+      // Registrar como processado com sucesso
+      this.eventDeduplicationService.registerEventAsProcessed(
+        duplicateCheckKey,
+        aggregateId,
+        type,
+      );
       this.logger.debug(
-        `[EventStoreService] Event ${type} saved for aggregate ${aggregateId}`,
+        `[EventStoreService] Event ${type} SAVED for ${eventSpecificId} (DB ID: ${savedEvent.id})`,
+        { eventKey: duplicateCheckKey },
       );
       return savedEvent;
     } catch (error) {
+      // Limpar a intenção de processamento em caso de erro
+      this.eventDeduplicationService.clearProcessingIntent(duplicateCheckKey);
+
+      // Se o erro for de chave duplicada no banco
+      if (error.code === '23505') {
+        this.logger.warn(
+          `[EventStoreService] Database unique constraint violation on save for event ${type}, ${eventSpecificId}. Key: ${duplicateCheckKey}`,
+          { errorCode: error.code },
+        );
+        return null; // Tratar como duplicado
+      }
       this.logger.error(
-        `[EventStoreService] Error saving event ${type} for aggregate ${aggregateId}: ${error.message}`,
-        error.stack,
+        `[EventStoreService] Error SAVING event ${type} for ${eventSpecificId}: ${error.message}`,
+        { key: duplicateCheckKey, stack: error.stack },
       );
       throw error;
     }

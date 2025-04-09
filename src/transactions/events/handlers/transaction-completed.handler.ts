@@ -31,7 +31,7 @@ export class TransactionCompletedHandler
     const handlerName = 'TransactionCompletedHandler';
     // Verificar se este evento é duplicado
     if (
-      this.eventDeduplicationService.isDuplicate(
+      this.eventDeduplicationService.isDuplicateOrProcessing(
         'TransactionCompletedEvent',
         event.transactionId,
       )

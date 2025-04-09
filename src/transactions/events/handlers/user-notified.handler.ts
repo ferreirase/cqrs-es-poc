@@ -24,7 +24,7 @@ export class UserNotifiedHandler implements IEventHandler<UserNotifiedEvent> {
     const handlerName = 'UserNotifiedHandler';
     // Verificar se este evento é duplicado
     if (
-      this.eventDeduplicationService.isDuplicate(
+      this.eventDeduplicationService.isDuplicateOrProcessing(
         'UserNotifiedEvent',
         event.transactionId,
         `${event.userId}:${event.accountId}`,
