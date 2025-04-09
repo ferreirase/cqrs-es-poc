@@ -1,79 +1,90 @@
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { v4 as uuidv4 } from 'uuid';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable } from '@nestjs/common';
 import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { WorkerMessageProcessor } from '../../../common/workers/worker-message-processor';
+import { TransactionAggregate } from '../../aggregates/transaction.aggregate';
 import { TransactionType } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 import { TransactionContextService } from '../../services/transaction-context.service';
-import { WithdrawalCommand } from '../impl/withdrawal.command';
 
-@CommandHandler(WithdrawalCommand)
-export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
+// Interface para a estrutura da mensagem que esperamos da fila (baseado no Controller)
+interface WithdrawalQueueMessage {
+  commandName: 'WithdrawalCommand';
+  payload: {
+    id: string;
+    sourceAccountId: string;
+    destinationAccountId: string;
+    amount: number;
+    description: string;
+  };
+}
+
+@Injectable()
+export class WithdrawalHandler {
   constructor(
     private readonly rabbitmqService: RabbitMQService,
     private readonly loggingService: LoggingService,
-    private readonly workerProcessor: WorkerMessageProcessor,
-    private readonly transactionAggregateRepository: TransactionAggregateRepository,
     private readonly transactionContextService: TransactionContextService,
+    private readonly transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  async execute(command: WithdrawalCommand): Promise<any> {
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange',
+    routingKey: 'commands.withdrawal',
+    queue: 'withdrawal_commands_queue',
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async consumeWithdrawalCommand(msg: string): Promise<void> {
     const handlerName = 'WithdrawalHandler';
     const startTime = Date.now();
-    const transactionId = command.id || uuidv4();
+
+    const { payload } = JSON.parse(msg) as WithdrawalQueueMessage;
+
+    console.log('payload aqui: ', payload);
+
+    const { id, sourceAccountId, destinationAccountId, amount, description } =
+      payload;
+
+    const transactionId = id;
 
     try {
       this.loggingService.logHandlerStart(handlerName, {
-        command,
         transactionId,
+        payload,
       });
-
-      const processingTask = {
-        operation: 'createTransaction',
-        data: {
-          transactionId: transactionId,
-          sourceAccountId: command.sourceAccountId,
-          destinationAccountId: command.destinationAccountId,
-          amount: command.amount,
-          type: TransactionType.WITHDRAWAL,
-          description: command.description,
-        },
-      };
-
-      this.loggingService.info(`[${handlerName}] Enviando tarefa para worker`, {
-        transactionId,
-        operation: processingTask.operation,
-      });
-
-      const processingResult = await this.workerProcessor.processMessage<any>(
-        processingTask,
-      );
-
-      if (!processingResult || !processingResult.processed) {
-        this.loggingService.error(
-          `[${handlerName}] Worker falhou ao processar a transação`,
-          { transactionId, processingResult },
-        );
-        throw new Error(
-          `Worker failed to process transaction ${transactionId}`,
-        );
-      }
 
       this.loggingService.info(
-        `[${handlerName}] Processamento de worker concluído`,
-        { transactionId, resultStatus: processingResult.status },
+        `[${handlerName}] Criando agregado para transação`,
+        { transactionId },
+      );
+
+      const transactionAggregate = new TransactionAggregate();
+
+      transactionAggregate.createTransaction(
+        transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        TransactionType.WITHDRAWAL,
+        description,
+      );
+
+      await this.transactionAggregateRepository.save(transactionAggregate);
+
+      this.loggingService.info(
+        `[${handlerName}] Agregado ${transactionId} criado e evento inicial salvo/publicado.`,
       );
 
       await this.transactionContextService.setInitialContext(
         transactionId,
-        command.sourceAccountId,
-        command.destinationAccountId,
-        command.amount,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
         TransactionType.WITHDRAWAL,
-        command.description,
+        description,
       );
-
       this.loggingService.info(
         `[${handlerName}] Contexto inicial definido para ${transactionId}`,
       );
@@ -82,8 +93,8 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
         commandName: 'CheckAccountBalanceCommand',
         payload: {
           transactionId: transactionId,
-          accountId: command.sourceAccountId,
-          amount: command.amount,
+          accountId: sourceAccountId,
+          amount: amount,
         },
       };
 
@@ -92,7 +103,6 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
         checkBalancePayload,
         { exchangeName: 'paymaker-exchange' },
       );
-
       this.loggingService.info(
         `[${handlerName}] Command 'CheckAccountBalanceCommand' publicado`,
         { transactionId: transactionId },
@@ -103,18 +113,15 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
         handlerName,
         { transactionId },
         executionTime,
-        { status: 'INITIATED' },
+        { status: 'AGGREGATE_CREATED_PUBLISHED_NEXT' },
       );
-
-      return { transactionId: transactionId, status: 'INITIATED' };
     } catch (error) {
       const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.logCommandError(handlerName, error, {
-        command,
+        messagePayload: payload,
         transactionId,
         executionTime,
       });
-      throw error;
     }
   }
 }

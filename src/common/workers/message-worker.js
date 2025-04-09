@@ -33,11 +33,7 @@ async function processTransaction(transactionData) {
 
   try {
     // Validação de dados
-    if (
-      !transactionData.transactionId ||
-      !transactionData.sourceAccountId ||
-      !transactionData.amount
-    ) {
+    if (!transactionData.sourceAccountId || !transactionData.amount) {
       throw new Error('Dados de transação incompletos');
     }
 

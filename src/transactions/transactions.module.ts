@@ -151,90 +151,68 @@ export class TransactionsModule implements OnModuleInit {
         '✅ Todas as filas RabbitMQ foram criadas e vinculadas com sucesso!',
       );
 
-      await this.setupThreadedConsumers();
+      // Comentado para evitar conflito com @RabbitSubscribe
+      // await this.setupThreadedConsumers();
     } catch (error) {
       console.error('❌ Erro ao inicializar filas RabbitMQ:', error);
       throw error;
     }
   }
 
+  /**
+   * Configura o processamento multi-thread para filas de alto volume.
+   * DEPRECATED: O handler agora usa @RabbitSubscribe diretamente.
+   */
+  /*
   private async setupThreadedConsumers() {
     try {
-      if (
-        this.withdrawalHandlerInstance &&
-        this.withdrawalHandlerInstance.execute
-      ) {
-        console.log('🧵 Configurando worker para withdrawal_commands_queue');
+      // Registrar worker para WithdrawalHandler
+      if (this.withdrawalHandlerInstance && this.withdrawalHandlerInstance.consumeWithdrawalCommand) { // CORRIGIDO: Verificar consumeWithdrawalCommand
+        console.log('🧵 Configurando worker para withdrawal_commands_queue (via setupThreadedConsumers) - ISSO PODE CAUSAR DUPLICIDADE COM @RabbitSubscribe');
         await this.rabbitMQWorkerService.registerQueueWorker(
           'withdrawal_commands_queue',
-          this.withdrawalHandlerInstance.execute.bind(
-            this.withdrawalHandlerInstance,
-          ),
+          // CORRIGIDO: Usar consumeWithdrawalCommand
+          this.withdrawalHandlerInstance.consumeWithdrawalCommand.bind(this.withdrawalHandlerInstance),
         );
       } else {
-        console.warn(
-          'Instância ou método execute de WithdrawalHandler não disponível para worker.',
-        );
+         console.warn('Instância ou método consumeWithdrawalCommand de WithdrawalHandler não disponível para worker.');
       }
 
-      if (
-        this.checkAccountBalanceHandlerInstance &&
-        this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand
-      ) {
+      // ... (Registrar outros workers - MANTIDO PARA EXEMPLO, mas podem precisar de ajuste similar se também usarem @RabbitSubscribe)
+      if (this.checkAccountBalanceHandlerInstance && this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand) {
         console.log('🧵 Configurando worker para check_balance_commands_queue');
         await this.rabbitMQWorkerService.registerQueueWorker(
           'check_balance_commands_queue',
-          this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand.bind(
-            this.checkAccountBalanceHandlerInstance,
-          ),
+          this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand.bind(this.checkAccountBalanceHandlerInstance),
         );
       } else {
-        console.warn(
-          'Instância ou método handleCheckBalanceCommand de CheckAccountBalanceHandler não disponível para worker.',
-        );
+        console.warn('Instância ou método handleCheckBalanceCommand de CheckAccountBalanceHandler não disponível para worker.');
       }
 
-      if (
-        this.reserveBalanceHandlerInstance &&
-        this.reserveBalanceHandlerInstance.handleReserveBalanceCommand
-      ) {
-        console.log(
-          '🧵 Configurando worker para reserve_balance_commands_queue',
-        );
+      if (this.reserveBalanceHandlerInstance && this.reserveBalanceHandlerInstance.handleReserveBalanceCommand) {
+        console.log('🧵 Configurando worker para reserve_balance_commands_queue');
         await this.rabbitMQWorkerService.registerQueueWorker(
           'reserve_balance_commands_queue',
-          this.reserveBalanceHandlerInstance.handleReserveBalanceCommand.bind(
-            this.reserveBalanceHandlerInstance,
-          ),
+          this.reserveBalanceHandlerInstance.handleReserveBalanceCommand.bind(this.reserveBalanceHandlerInstance),
         );
       } else {
-        console.warn(
-          'Instância ou método handleReserveBalanceCommand de ReserveBalanceHandler não disponível para worker.',
-        );
+         console.warn('Instância ou método handleReserveBalanceCommand de ReserveBalanceHandler não disponível para worker.');
       }
 
-      if (
-        this.processTransactionHandlerInstance &&
-        this.processTransactionHandlerInstance.handleProcessTransactionCommand
-      ) {
-        console.log(
-          '🧵 Configurando worker para process_transaction_commands_queue',
-        );
+      if (this.processTransactionHandlerInstance && this.processTransactionHandlerInstance.handleProcessTransactionCommand) {
+        console.log('🧵 Configurando worker para process_transaction_commands_queue');
         await this.rabbitMQWorkerService.registerQueueWorker(
           'process_transaction_commands_queue',
-          this.processTransactionHandlerInstance.handleProcessTransactionCommand.bind(
-            this.processTransactionHandlerInstance,
-          ),
+          this.processTransactionHandlerInstance.handleProcessTransactionCommand.bind(this.processTransactionHandlerInstance),
         );
       } else {
-        console.warn(
-          'Instância ou método handleProcessTransactionCommand de ProcessTransactionHandler não disponível para worker.',
-        );
+         console.warn('Instância ou método handleProcessTransactionCommand de ProcessTransactionHandler não disponível para worker.');
       }
 
-      console.log('✅ Processamento multi-thread configurado com sucesso!');
+      console.log('✅ Processamento multi-thread configurado com sucesso! (via setupThreadedConsumers)');
     } catch (error) {
       console.error('❌ Erro ao configurar processamento multi-thread:', error);
     }
   }
+  */
 }

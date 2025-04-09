@@ -9,10 +9,11 @@ import {
 } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { Request } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { RabbitMQService } from '../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../common/monitoring/logging.service';
 import { PrometheusService } from '../../common/monitoring/prometheus.service';
 import { CreateTransactionCommand } from '../commands/impl/create-transaction.command';
-import { WithdrawalCommand } from '../commands/impl/withdrawal.command';
 import { TransactionType } from '../models/transaction.entity';
 import { GetAccountTransactionsQuery } from '../queries/impl/get-account-transactions.query';
 import { GetAllTransactionsQuery } from '../queries/impl/get-all-transactions.query';
@@ -34,6 +35,7 @@ export class TransactionsController {
     private readonly queryBus: QueryBus,
     private readonly loggingService: LoggingService,
     private readonly prometheusService: PrometheusService,
+    private readonly rabbitmqService: RabbitMQService,
   ) {}
 
   @Post()
@@ -293,73 +295,69 @@ export class TransactionsController {
     const startTime = Date.now();
     const route = 'POST /transactions/withdrawal';
 
-    // Log da chamada de API
     this.loggingService.logRoute(route, 'POST', withdrawalDto);
-
-    // Registra intenção da API
-    this.prometheusService.getCounter('api_requests_total').inc(
-      {
-        path: '/transactions/withdrawal',
-        method: 'POST',
-        operation: 'withdrawal',
-      },
-      1,
-    );
+    this.prometheusService
+      .getCounter('api_requests_total')
+      .inc({ path: route, method: 'POST', operation: 'withdrawal' }, 1);
 
     try {
-      const command = new WithdrawalCommand(
-        null, // id will be generated in the handler
-        withdrawalDto.sourceAccountId,
-        withdrawalDto.destinationAccountId,
-        withdrawalDto.amount,
-        withdrawalDto.description || 'Withdrawal operation',
-      );
+      // Gerar um ID de transação aqui, pois o handler agora espera um
+      const transactionId = uuidv4();
 
-      await this.commandBus.execute(command);
-
-      // Registra sucesso da API
-      const executionTime = (Date.now() - startTime) / 1000;
-      this.prometheusService
-        .getHistogram('api_request_duration_seconds')
-        .observe(
-          {
-            path: '/transactions/withdrawal',
-            method: 'POST',
-            status: '202', // Accepted - a saga foi iniciada
-          },
-          executionTime,
-        );
-
-      return {
-        message: 'Withdrawal operation started',
-        status: 'PROCESSING',
-        _metadata: {
-          responseTime: executionTime,
+      // Criar o payload da mensagem para RabbitMQ
+      const messagePayload = {
+        commandName: 'WithdrawalCommand', // Identifica o tipo de comando para o handler
+        payload: {
+          id: transactionId, // Passar o ID gerado
+          sourceAccountId: withdrawalDto.sourceAccountId,
+          destinationAccountId: withdrawalDto.destinationAccountId,
+          amount: withdrawalDto.amount,
+          description: withdrawalDto.description || 'Withdrawal operation',
         },
       };
+
+      // Publicar diretamente na exchange/routing key que o handler está ouvindo
+      await this.rabbitmqService.publishToExchange(
+        'commands.withdrawal', // Routing key
+        messagePayload, // Mensagem completa
+        { exchangeName: 'paymaker-exchange' }, // Nome da exchange
+      );
+
+      // Log e métricas de sucesso (API aceitou a requisição)
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.prometheusService
+        .getHistogram('api_request_duration_seconds')
+        .observe({ path: route, method: 'POST', status: '202' }, executionTime);
+
+      this.loggingService.info(`[${route}] Withdrawal request accepted`, {
+        transactionId, // Loggar o ID gerado
+        requestBody: withdrawalDto,
+      });
+
+      // Retornar status 202 Accepted, indicando que a requisição foi aceita para processamento
+      return {
+        message: 'Withdrawal operation accepted for processing.',
+        status: 'ACCEPTED',
+        transactionId: transactionId, // Retornar o ID para rastreamento
+        _metadata: { responseTime: executionTime },
+      };
     } catch (error) {
-      // Registra erro da API
+      // Lógica de erro da API (sem alterações significativas)
       const executionTime = (Date.now() - startTime) / 1000;
       this.prometheusService
         .getHistogram('api_request_duration_seconds')
         .observe(
-          {
-            path: '/transactions/withdrawal',
-            method: 'POST',
-            status: error.status || '500',
-          },
+          { path: route, method: 'POST', status: error.status || '500' },
           executionTime,
         );
-
       this.prometheusService.getCounter('api_errors_total').inc(
         {
-          path: '/transactions/withdrawal',
+          path: route,
           method: 'POST',
           error_type: error.name || 'UnknownError',
         },
         1,
       );
-
       this.loggingService.error(`API error in ${route}`, {
         route,
         method: 'POST',
@@ -367,7 +365,6 @@ export class TransactionsController {
         stack: error.stack,
         requestBody: withdrawalDto,
       });
-
       throw error;
     }
   }

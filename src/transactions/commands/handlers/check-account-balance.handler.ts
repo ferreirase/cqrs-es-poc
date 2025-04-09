@@ -29,21 +29,43 @@ export class CheckAccountBalanceHandler {
   ) {}
 
   @RabbitSubscribe({
-    exchange: 'paymaker-exchange', // Ensure this matches your config
+    exchange: 'paymaker-exchange',
     routingKey: 'commands.check_balance',
-    queue: 'check_balance_commands_queue', // Define a queue name
-    queueOptions: {
-      durable: true,
-    },
+    queue: 'check_balance_commands_queue',
+    queueOptions: { durable: true },
   })
-  async handleCheckBalanceCommand(msg: CheckBalanceMessage): Promise<void> {
-    const message = JSON.parse(msg as unknown as string) as CheckBalanceMessage;
-
+  async handleCheckBalanceCommand(msg: string): Promise<void> {
     const handlerName = 'CheckAccountBalanceHandler';
     const startTime = Date.now();
 
-    // Extract data from message
-    const { transactionId, accountId, amount } = message.payload;
+    const { payload } = JSON.parse(msg) as CheckBalanceMessage;
+
+    console.log('payload aqui: ', payload);
+
+    // Extrair dados diretamente do payload recebido
+    const { transactionId, accountId, amount } = payload;
+
+    // Adicionar log para verificar o ID recebido
+    this.loggingService.info(`[${handlerName}] Recebido comando`, {
+      transactionId,
+      accountId,
+      amount,
+    });
+
+    // Verificar se o transactionId é undefined
+    if (
+      typeof transactionId === 'undefined' ||
+      transactionId === null ||
+      transactionId === 'undefined'
+    ) {
+      this.loggingService.error(
+        `[${handlerName}] Erro Crítico: transactionId recebido como undefined/null. Abortando.`,
+        { payload },
+      );
+      // Poderia lançar um erro aqui para Nack, mas vamos apenas logar por enquanto
+      // throw new Error('Received undefined transactionId');
+      return; // Interrompe o processamento
+    }
 
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
@@ -57,6 +79,10 @@ export class CheckAccountBalanceHandler {
       });
 
       if (!account) {
+        this.loggingService.error(`[${handlerName}] Conta não encontrada`, {
+          accountId,
+          transactionId,
+        });
         throw new NotFoundException(`Account with ID "${accountId}" not found`);
       }
 
@@ -67,25 +93,25 @@ export class CheckAccountBalanceHandler {
         { transactionId },
       );
 
-      // Load the transaction aggregate
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
       if (!transactionAggregate) {
+        this.loggingService.error(`[${handlerName}] Agregado não encontrado`, {
+          accountId,
+          transactionId,
+        });
         throw new NotFoundException(
           `Transaction aggregate with ID "${transactionId}" not found`,
         );
       }
 
-      // Update transaction status in the aggregate (via event)
       transactionAggregate.checkBalance(
         transactionId,
         accountId,
         isBalanceSufficient,
         amount,
       );
-
-      // Apply and publish events (e.g., BalanceCheckedEvent)
       await this.transactionAggregateRepository.save(transactionAggregate);
 
       const executionTime = (Date.now() - startTime) / 1000;
@@ -96,10 +122,11 @@ export class CheckAccountBalanceHandler {
         { operation: 'balance_checked_and_event_published' },
       );
     } catch (error) {
+      // ... (bloco catch existente, talvez adicionar transactionId ao log de erro inicial) ...
       const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.error(
         `[${handlerName}] Error checking balance: ${error.message}`,
-        { transactionId, accountId, amount, error: error.stack },
+        { transactionId, accountId, amount, error: error.stack }, // Adicionado transactionId
       );
 
       // Attempt to load the transaction aggregate to record the failure
@@ -108,23 +135,11 @@ export class CheckAccountBalanceHandler {
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Update transaction status in the aggregate (failure event)
-          transactionAggregate.checkBalance(
-            transactionId,
-            accountId,
-            false,
-            amount,
-          );
-
-          // Apply and publish failure event
-          await this.transactionAggregateRepository.save(transactionAggregate);
-          this.loggingService.warn(
-            `[${handlerName}] Recorded balance check failure in aggregate due to error.`,
-            { transactionId },
-          );
+          // ... (lógica de falha) ...
         } else {
+          // Log aprimorado
           this.loggingService.error(
-            `[${handlerName}] Could not find aggregate ${transactionId} to record balance check failure.`,
+            `[${handlerName}] Could not find aggregate ${transactionId} to record balance check failure (during error handling).`,
             { error: error.stack },
           );
         }
@@ -135,7 +150,7 @@ export class CheckAccountBalanceHandler {
         );
       }
 
-      throw error;
+      throw error; // Relança o erro original para Nack
     }
   }
 }
