@@ -1,3 +1,4 @@
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -32,6 +33,16 @@ export class CreateUserHandler implements ICommandHandler<CreateUserCommand> {
     try {
       const { id, name, document, email } = command;
       const userId = id || uuidv4();
+
+      const [userExists] = (await this.userRepository.query(
+        // find user by document or email, only one row
+        `SELECT * FROM users WHERE document = $1 OR email = $2 LIMIT 1`,
+        [document, email],
+      )) as UserEntity[];
+
+      if (userExists) {
+        throw new HttpException('User already exists', HttpStatus.BAD_REQUEST);
+      }
 
       const user = this.userRepository.create({
         id: userId,
