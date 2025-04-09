@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { EventStoreService } from '../common/events/event-store.service';
 import { EventEntity } from '../common/events/event.entity';
 import { RabbitMQModule } from '../common/messaging/rabbitmq.module';
+import { RabbitMQService } from '../common/messaging/rabbitmq.service';
 import { MonitoringModule } from '../common/monitoring/monitoring.module';
 import { TransactionsController } from './controllers/transactions.controller';
 import { TransactionEntity } from './models/transaction.entity';
@@ -72,4 +73,100 @@ const Repositories = [TransactionAggregateRepository];
     ...Repositories,
   ],
 })
-export class TransactionsModule {}
+export class TransactionsModule implements OnModuleInit {
+  constructor(private readonly rabbitMQService: RabbitMQService) {}
+
+  private readonly exchangeName = 'paymaker-exchange';
+
+  async onModuleInit() {
+    // Criar e vincular todas as filas necessárias para o fluxo de transações
+    try {
+      // Fila de comandos de saque
+      await this.rabbitMQService.createQueueAndBind(
+        'withdrawal_commands_queue',
+        'commands.withdrawal',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de verificação de saldo
+      await this.rabbitMQService.createQueueAndBind(
+        'check_balance_commands_queue',
+        'commands.check_balance',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de reserva de saldo
+      await this.rabbitMQService.createQueueAndBind(
+        'reserve_balance_commands_queue',
+        'commands.reserve_balance',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de processamento de transação
+      await this.rabbitMQService.createQueueAndBind(
+        'process_transaction_commands_queue',
+        'commands.process_transaction',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de confirmação de transação
+      await this.rabbitMQService.createQueueAndBind(
+        'confirm_transaction_commands_queue',
+        'commands.confirm_transaction',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de atualização de extrato
+      await this.rabbitMQService.createQueueAndBind(
+        'update_statement_commands_queue',
+        'commands.update_statement',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de notificação de usuário
+      await this.rabbitMQService.createQueueAndBind(
+        'notify_user_commands_queue',
+        'commands.notify_user',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      // Fila de liberação de saldo (compensação)
+      await this.rabbitMQService.createQueueAndBind(
+        'release_balance_commands_queue',
+        'commands.release_balance',
+        {
+          durable: true,
+          exchangeName: this.exchangeName,
+        },
+      );
+
+      console.log(
+        '✅ Todas as filas RabbitMQ foram criadas e vinculadas com sucesso!',
+      );
+    } catch (error) {
+      console.error('❌ Erro ao inicializar filas RabbitMQ:', error);
+      throw error;
+    }
+  }
+}

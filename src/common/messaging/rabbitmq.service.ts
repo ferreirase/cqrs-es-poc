@@ -69,12 +69,15 @@ export class RabbitMQService {
       persistent?: boolean;
       headers?: any;
       expiration?: string;
+      exchangeName?: string; // Adicionado opção para definir nome da exchange
     },
   ): Promise<void> {
     try {
       // Use the exchange configured in the module
+      const exchangeName = options?.exchangeName || 'paymaker-exchange';
+
       await this.amqpConnection.publish(
-        '',
+        exchangeName, // CORRIGIDO: usar a exchange configurada em vez de string vazia
         routingKey,
         JSON.stringify(message),
         {
@@ -85,7 +88,7 @@ export class RabbitMQService {
       );
 
       this.logger.debug(
-        `Published message to exchange with routingKey: ${routingKey}`,
+        `Published message to exchange ${exchangeName} with routingKey: ${routingKey}`,
       );
     } catch (error) {
       this.logger.error(
