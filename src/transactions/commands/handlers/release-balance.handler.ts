@@ -1,42 +1,66 @@
-import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { ReleaseBalanceCommand } from '../../commands/impl/release-balance.command';
 import {
   TransactionEntity,
   TransactionStatus,
 } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-@CommandHandler(ReleaseBalanceCommand)
-export class ReleaseBalanceHandler
-  implements ICommandHandler<ReleaseBalanceCommand>
-{
+// Define the expected message structure from RabbitMQ
+interface ReleaseBalanceMessage {
+  commandName: 'ReleaseBalanceCommand';
+  payload: {
+    transactionId: string;
+    accountId: string; // Source Account ID whose balance needs release
+    amount: number;
+    reason: string; // Reason for compensation
+  };
+}
+
+@Injectable()
+export class ReleaseBalanceHandler {
   constructor(
     @InjectRepository(AccountEntity)
     private accountRepository: Repository<AccountEntity>,
+    @InjectRepository(TransactionEntity)
+    private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  async execute(command: ReleaseBalanceCommand): Promise<void> {
-    const { transactionId, accountId, amount } = command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange', // Ensure this matches your config
+    routingKey: 'commands.release_balance',
+    queue: 'release_balance_commands_queue', // Define a queue name
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleReleaseBalanceCommand(msg: ReleaseBalanceMessage): Promise<void> {
+    const handlerName = 'ReleaseBalanceHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[ReleaseBalanceHandler] Releasing reserved balance for account ${accountId}, amount: ${amount}`,
-    );
+    const { transactionId, accountId, amount, reason } = msg.payload;
 
+    this.loggingService.logHandlerStart(handlerName, { ...msg.payload });
+
+    // Keep TypeORM transaction for consistency
     const queryRunner =
       this.accountRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
+    let compensationSuccess = false;
+    let compensationError: string | undefined = undefined;
+
     try {
-      // Buscar a transação para verificar seu estado atual
+      // 1. Fetch transaction to check current status
       const transaction = await queryRunner.manager
         .getRepository(TransactionEntity)
         .findOne({
@@ -44,19 +68,42 @@ export class ReleaseBalanceHandler
         });
 
       if (!transaction) {
-        throw new NotFoundException(
-          `Transaction with ID "${transactionId}" not found`,
+        // If transaction not found, maybe already compensated or never existed?
+        // Log a warning and potentially exit gracefully.
+        this.loggingService.warn(
+          `[${handlerName}] Transaction ${transactionId} not found. Assuming already compensated or does not exist.`,
+          { transactionId, accountId },
         );
+        await queryRunner.commitTransaction(); // Commit empty transaction
+        // Do not publish BalanceReleasedEvent if TX not found
+        return;
       }
 
-      // Se a transação já estiver CONFIRMED, não é possível fazer o rollback
-      if (transaction.status === TransactionStatus.CONFIRMED) {
+      // 2. Check if compensation is possible/needed
+      if (
+        transaction.status === TransactionStatus.CONFIRMED ||
+        transaction.status === TransactionStatus.COMPLETED
+      ) {
+        // Cannot compensate a completed/confirmed transaction
         throw new Error(
-          `Cannot release balance for confirmed transaction ${transactionId}`,
+          `Cannot release balance for transaction ${transactionId} already in status ${transaction.status}`,
         );
       }
+      if (
+        transaction.status === TransactionStatus.FAILED ||
+        transaction.status === TransactionStatus.CANCELED
+      ) {
+        // Already failed/cancelled, potentially compensated. Log and exit.
+        this.loggingService.warn(
+          `[${handlerName}] Transaction ${transactionId} is already in status ${transaction.status}. Skipping release balance.`,
+          { transactionId, accountId },
+        );
+        await queryRunner.commitTransaction(); // Commit empty transaction
+        // Do not publish BalanceReleasedEvent again
+        return;
+      }
 
-      // Buscar a conta para realizar a liberação do saldo reservado
+      // 3. Fetch account (lock for update)
       const account = await queryRunner.manager
         .getRepository(AccountEntity)
         .findOne({
@@ -65,84 +112,147 @@ export class ReleaseBalanceHandler
         });
 
       if (!account) {
-        throw new NotFoundException(`Account with ID "${accountId}" not found`);
+        // Account must exist if balance was reserved/processed
+        throw new NotFoundException(
+          `Account with ID "${accountId}" not found during balance release.`,
+        );
       }
 
-      // Se o status da transação for PROCESSED, significa que já houve débito,
-      // então precisamos restaurar o saldo
+      // 4. Reverse balance ONLY if transaction was processed (debited)
+      let balanceReversed = false;
       if (transaction.status === TransactionStatus.PROCESSED) {
-        account.balance += amount;
+        this.loggingService.info(
+          `[${handlerName}] Transaction ${transactionId} was PROCESSED. Reversing balance for account ${accountId}.`,
+        );
+        account.balance = Number(account.balance) + Number(amount); // Add back the amount
         account.updatedAt = new Date();
         await queryRunner.manager.save(account);
+        balanceReversed = true;
+      } else {
+        this.loggingService.info(
+          `[${handlerName}] Transaction ${transactionId} status is ${transaction.status}. No balance reversal needed for account ${accountId}.`,
+        );
       }
 
-      // Atualizar o status da transação para cancelled
-      transaction.status = TransactionStatus.CANCELED;
+      // 5. Update transaction status to FAILED
+      const previousStatus = transaction.status;
+      transaction.status = TransactionStatus.FAILED; // Final state after compensation
+      transaction.error = reason; // Store the reason for failure
       transaction.updatedAt = new Date();
       await queryRunner.manager.save(transaction);
+      this.loggingService.info(
+        `[${handlerName}] Transaction ${transactionId} status updated from ${previousStatus} to ${transaction.status}.`,
+      );
 
-      // Carregar o agregado de transação
+      // 6. Load the transaction aggregate
+      // Use repository outside queryRunner to load aggregate state from events
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
       if (!transactionAggregate) {
-        throw new NotFoundException(
-          `Transaction aggregate with ID "${transactionId}" not found`,
+        // This is less critical here, but log a warning
+        this.loggingService.warn(
+          `[${handlerName}] Transaction aggregate ${transactionId} not found while releasing balance. Event might not reflect latest state.`,
+          { transactionId, accountId },
+        );
+        // Proceed with commit even if aggregate isn't found for event publishing
+      } else {
+        // 7. Apply the releaseBalance event to the aggregate
+        transactionAggregate.releaseBalance(
+          transactionId,
+          accountId,
+          amount,
+          true, // Mark compensation operation as successful
+          reason, // Pass the original reason
+          undefined, // No error in the release operation itself
+        );
+
+        // 8. Save aggregate (publishes BalanceReleasedEvent)
+        await this.transactionAggregateRepository.save(transactionAggregate);
+        this.loggingService.info(
+          `[${handlerName}] Applied releaseBalance to aggregate ${transactionId}.`,
         );
       }
 
-      // Atualizar o status da transação no agregado (via evento)
-      transactionAggregate.releaseBalance(
-        transactionId,
-        accountId,
-        amount,
-        true,
-      );
-
-      // Aplicar e publicar os eventos
-      await this.transactionAggregateRepository.save(transactionAggregate);
-
-      // Commit da transação
+      // 9. Commit the database transaction
       await queryRunner.commitTransaction();
+      compensationSuccess = true;
 
       this.loggingService.info(
-        `[ReleaseBalanceHandler] Successfully released balance for account ${accountId}`,
+        `[${handlerName}] Successfully released/compensated balance for transaction ${transactionId}, account ${accountId}. Balance reversed: ${balanceReversed}`,
       );
     } catch (error) {
-      // Em caso de erro, fazer rollback da transação
+      // Rollback database transaction on error
       await queryRunner.rollbackTransaction();
+      compensationSuccess = false;
+      compensationError = error.message;
 
       this.loggingService.error(
-        `[ReleaseBalanceHandler] Error releasing balance: ${error.message}`,
+        `[${handlerName}] Error releasing balance: ${error.message}`,
+        {
+          transactionId,
+          accountId,
+          amount,
+          reason,
+          error: error.stack,
+          payload: msg.payload,
+        },
       );
 
-      // Tentar carregar o agregado de transação
+      // Attempt to load aggregate again to publish failure event for the *compensation itself*
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
+          // Publish failure event via aggregate for the release operation
           transactionAggregate.releaseBalance(
             transactionId,
             accountId,
             amount,
-            false,
+            false, // Mark compensation operation as failed
+            reason, // Original reason
+            compensationError, // Error during this release attempt
           );
-
-          // Aplicar e publicar os eventos
           await this.transactionAggregateRepository.save(transactionAggregate);
+          this.loggingService.warn(
+            `[${handlerName}] Recorded balance release failure in aggregate due to error.`,
+            { transactionId },
+          );
+        } else {
+          this.loggingService.error(
+            `[${handlerName}] Aggregate ${transactionId} not found for failure reporting during release error.`,
+          );
         }
       } catch (aggError) {
         this.loggingService.error(
-          `[ReleaseBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+          `[${handlerName}] Error saving aggregate during release error handling: ${aggError.message}`,
+          { transactionId, error: aggError.stack },
         );
       }
 
-      throw error;
+      throw error; // Rethrow original error
     } finally {
-      // Liberar o queryRunner independente do resultado
+      // Release the query runner
       await queryRunner.release();
+      const executionTime = (Date.now() - startTime) / 1000;
+      if (compensationSuccess) {
+        this.loggingService.logCommandSuccess(
+          handlerName,
+          msg.payload,
+          executionTime,
+          { operation: 'balance_released_event_published' },
+        );
+      } else {
+        this.loggingService.logCommandError(
+          handlerName,
+          new Error(compensationError || 'Release balance failed'),
+          msg.payload,
+        );
+      }
+      this.loggingService.info(
+        `[${handlerName}] Finished processing message for ${transactionId}/${accountId}.`,
+      );
     }
   }
 }

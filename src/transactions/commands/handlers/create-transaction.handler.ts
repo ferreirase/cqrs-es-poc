@@ -1,4 +1,5 @@
-import { CommandBus, CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { PrometheusService } from '../../../common/monitoring/prometheus.service';
 import { TransactionType } from '../../models/transaction.entity';
@@ -10,7 +11,7 @@ export class CreateTransactionHandler
   implements ICommandHandler<CreateTransactionCommand>
 {
   constructor(
-    private commandBus: CommandBus,
+    private rabbitMQService: RabbitMQService,
     private loggingService: LoggingService,
     private prometheusService: PrometheusService,
   ) {}
@@ -53,8 +54,31 @@ export class CreateTransactionHandler
           description || 'Withdrawal operation',
         );
 
-        // Executa o comando WithdrawalCommand
-        await this.commandBus.execute(withdrawalCommand);
+        // Publish withdrawal command details to RabbitMQ
+        const withdrawalPayload = {
+          commandName: 'WithdrawalCommand', // Identify the command type
+          payload: {
+            transactionId: null, // ID is usually generated later or context-dependent
+            sourceAccountId: withdrawalCommand.sourceAccountId,
+            destinationAccountId: withdrawalCommand.destinationAccountId,
+            amount: withdrawalCommand.amount,
+            description: withdrawalCommand.description,
+          },
+          // Optional: Add metadata like correlationId if needed
+        };
+
+        await this.rabbitMQService.publishToExchange(
+          'commands.withdrawal', // Routing key for withdrawal commands
+          withdrawalPayload,
+        );
+
+        this.loggingService.info(
+          '[CreateTransactionHandler] Published WithdrawalCommand details to queue.',
+          {
+            routingKey: 'commands.withdrawal',
+            payload: withdrawalPayload.payload,
+          },
+        );
 
         // Registrar métricas de sucesso
         const executionTime = (Date.now() - startTime) / 1000;

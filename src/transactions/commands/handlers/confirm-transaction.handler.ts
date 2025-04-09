@@ -1,83 +1,144 @@
-import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { ConfirmTransactionCommand } from '../../commands/impl/confirm-transaction.command';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-@CommandHandler(ConfirmTransactionCommand)
-export class ConfirmTransactionHandler
-  implements ICommandHandler<ConfirmTransactionCommand>
-{
+// Define the expected message structure from RabbitMQ
+// Based on TransactionProcessedEvent payload used in saga
+interface ConfirmTransactionMessage {
+  commandName: 'ConfirmTransactionCommand';
+  payload: {
+    transactionId: string;
+    sourceAccountId: string;
+    destinationAccountId: string | null;
+    amount: number;
+    // Description might not be strictly needed for confirmation logic itself,
+    // but could be fetched if required for the event.
+    // For now, assume aggregate.confirmTransaction handles null description.
+  };
+}
+
+@Injectable()
+export class ConfirmTransactionHandler {
   constructor(
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
     private eventBus: EventBus,
   ) {}
 
-  async execute(command: ConfirmTransactionCommand): Promise<void> {
-    const { transactionId, sourceAccountId, destinationAccountId, amount } =
-      command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange', // Ensure this matches your config
+    routingKey: 'commands.confirm_transaction',
+    queue: 'confirm_transaction_commands_queue', // Define a queue name
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleConfirmTransactionCommand(
+    msg: ConfirmTransactionMessage,
+  ): Promise<void> {
+    const handlerName = 'ConfirmTransactionHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[ConfirmTransactionHandler] Confirming transaction: ${transactionId}`,
-    );
+    const { transactionId, sourceAccountId, destinationAccountId, amount } =
+      msg.payload;
+
+    this.loggingService.logHandlerStart(handlerName, {
+      transactionId,
+      sourceAccountId,
+      destinationAccountId,
+      amount,
+    });
 
     try {
-      // Carregar o agregado de transação
+      // Load the transaction aggregate
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
       if (!transactionAggregate) {
+        this.loggingService.error(
+          `[${handlerName}] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. Cannot confirm.`,
+          { transactionId, ...msg.payload },
+        );
         throw new NotFoundException(
-          `Transaction with ID "${transactionId}" not found`,
+          `Transaction aggregate with ID "${transactionId}" not found. Cannot confirm.`,
         );
       }
 
-      // Confirmar a transação no agregado (via evento)
+      // Apply the confirmTransaction domain logic/event to the aggregate
+      // Pass data from the message. Assume description is not needed or fetched elsewhere if required by event.
       transactionAggregate.confirmTransaction(
         transactionId,
         sourceAccountId,
         destinationAccountId,
         amount,
-        true,
+        null, // Description - pass null, aggregate event needs it but handler doesn't fetch
+        true, // Success
+        undefined, // No error on success path
       );
 
-      // Aplicar e publicar os eventos
+      // Save the aggregate, which publishes the enriched TransactionConfirmedEvent
       await this.transactionAggregateRepository.save(transactionAggregate);
 
-      this.loggingService.info(
-        `[ConfirmTransactionHandler] Successfully confirmed transaction ${transactionId}`,
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.loggingService.logCommandSuccess(
+        handlerName,
+        { transactionId, sourceAccountId, destinationAccountId, amount },
+        executionTime,
+        { operation: 'transaction_confirmed_event_published' },
       );
     } catch (error) {
+      const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.error(
-        `[ConfirmTransactionHandler] Error confirming transaction: ${error.message}`,
+        `[${handlerName}] Error confirming transaction (applying event): ${error.message}`,
+        {
+          transactionId,
+          ...msg.payload,
+          error: error.stack,
+        },
       );
 
-      // Tentar carregar o agregado de transação
+      // Attempt to load aggregate again to publish failure event
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
+          // Publish failure event via aggregate
           transactionAggregate.confirmTransaction(
             transactionId,
-            sourceAccountId,
+            sourceAccountId, // Use data from original message
             destinationAccountId,
             amount,
-            false,
+            null, // Description
+            false, // Failure
+            error.message, // Pass error message
           );
-
-          // Aplicar e publicar os eventos
           await this.transactionAggregateRepository.save(transactionAggregate);
+          this.loggingService.warn(
+            `[${handlerName}] Recorded transaction confirmation failure in aggregate due to error.`,
+            { transactionId },
+          );
+        } else {
+          this.loggingService.error(
+            `[${handlerName}] Aggregate ${transactionId} not found for failure reporting.`,
+            { error: error.stack },
+          );
         }
       } catch (aggError) {
         this.loggingService.error(
-          `[ConfirmTransactionHandler] Error updating transaction aggregate: ${aggError.message}`,
+          `[${handlerName}] Error saving aggregate during error handling: ${aggError.message}`,
+          { transactionId, error: aggError.stack },
         );
       }
 
-      throw error;
+      // Consider NACKing the message
+      throw error; // Rethrow the original error
+    } finally {
+      this.loggingService.info(
+        `[${handlerName}] Finished processing message for ${transactionId}.`,
+      );
     }
   }
 }

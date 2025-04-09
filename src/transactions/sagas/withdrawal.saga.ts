@@ -1,17 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { CommandBus, EventBus, ICommand, ofType, Saga } from '@nestjs/cqrs';
+import { CommandBus, EventBus, ofType, Saga } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Model } from 'mongoose';
-import { catchError, mergeMap, Observable, of, switchMap } from 'rxjs';
+import { catchError, mergeMap, Observable, of, tap } from 'rxjs';
 import { Repository } from 'typeorm';
+import { RabbitMQService } from '../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../common/monitoring/logging.service';
-import { ConfirmTransactionCommand } from '../commands/impl/confirm-transaction.command';
-import { NotifyUserCommand } from '../commands/impl/notify-user.command';
-import { ProcessTransactionCommand } from '../commands/impl/process-transaction.command';
-import { ReleaseBalanceCommand } from '../commands/impl/release-balance.command';
-import { ReserveBalanceCommand } from '../commands/impl/reserve-balance.command';
-import { UpdateAccountStatementCommand } from '../commands/impl/update-account-statement.command';
 import { UpdateTransactionStatusCommand } from '../commands/impl/update-transaction-status.command';
 import { BalanceCheckedEvent } from '../events/impl/balance-checked.event';
 import { BalanceReleasedEvent } from '../events/impl/balance-released.event';
@@ -30,22 +25,20 @@ import {
   TransactionDocument,
   TransactionStatus,
 } from '../models/transaction.schema';
-import { TransactionContextService } from '../services/transaction-context.service';
 
 @Injectable()
 export class WithdrawalSaga {
   constructor(
     private readonly loggingService: LoggingService,
-    private readonly transactionContext: TransactionContextService,
     private readonly commandBus: CommandBus,
     private readonly eventBus: EventBus,
+    private readonly rabbitMQService: RabbitMQService,
     @InjectRepository(TransactionEntity)
     private readonly transactionRepository: Repository<TransactionEntity>,
     @InjectModel(TransactionDocument.name)
     private readonly transactionModel: Model<TransactionDocument>,
   ) {}
 
-  // Método helper para atualizar o status da transação em ambos repositórios diretamente
   private async updateTransactionStatus(
     transactionId: string,
     status: TransactionStatus,
@@ -65,19 +58,15 @@ export class WithdrawalSaga {
           ? new Date()
           : undefined;
 
-      // 1. Primeiro, emitir o comando para atualizar o status
       const statusCommand = new UpdateTransactionStatusCommand(
         transactionId,
         status,
         processedAt,
         error,
       );
-
-      // Execute o comando para garantir que eventos e projeções sejam tratados
       await this.commandBus.execute(statusCommand);
 
-      // 2. Atualizar do lado Command (TypeORM)
-      const updateCommandData = {
+      const updateData = {
         status,
         ...(processedAt && { processedAt }),
         updatedAt: new Date(),
@@ -86,97 +75,80 @@ export class WithdrawalSaga {
 
       const commandResult = await this.transactionRepository.update(
         { id: transactionId },
-        updateCommandData,
+        updateData,
       );
-
       if (!commandResult.affected) {
-        throw new Error(
-          `Failed to update command-side transaction ${transactionId}`,
+        this.loggingService.warn(
+          `[WithdrawalSaga] Command-side transaction ${transactionId} status update returned 0 affected rows (might be expected).`,
         );
       }
-
-      this.loggingService.info(
-        `[WithdrawalSaga] Command-side transaction updated for ${transactionId}`,
-        { affected: commandResult.affected, status },
-      );
-
-      // 3. Atualizar do lado Query (MongoDB)
-      const updateQueryData: any = {
-        status,
-        updatedAt: new Date(),
-        ...(processedAt && { processedAt }),
-        ...(error && { error }),
-      };
 
       const queryResult = await this.transactionModel.findOneAndUpdate(
         { id: transactionId },
-        { $set: updateQueryData },
+        { $set: updateData },
         { new: true },
       );
-
       if (!queryResult) {
-        throw new Error(
-          `Failed to update query-side transaction ${transactionId}`,
+        this.loggingService.warn(
+          `[WithdrawalSaga] Query-side transaction ${transactionId} status update returned null (might be expected).`,
         );
       }
 
       this.loggingService.info(
-        `[WithdrawalSaga] Query-side transaction updated for ${transactionId}`,
-        { status, success: true },
-      );
-
-      this.loggingService.info(
-        `[WithdrawalSaga] Status updated successfully for transaction ${transactionId}`,
+        `[WithdrawalSaga] Status update initiated/verified for transaction ${transactionId}`,
         { status },
       );
     } catch (err) {
       this.loggingService.error(
-        `[WithdrawalSaga] Error updating transaction status for ${transactionId}`,
+        `[WithdrawalSaga] Error during transaction status update for ${transactionId}`,
         { error: err.message, stack: err.stack },
       );
-      throw err; // Re-throw para garantir que a saga saiba que houve falha
     }
   }
 
   @Saga()
-  balanceChecked = (events$: Observable<any>): Observable<ICommand> => {
+  balanceChecked = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceCheckedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: BalanceCheckedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Balance checked event received: ${JSON.stringify(
-            event,
-          )}`,
+          `[WithdrawalSaga] Handling BalanceCheckedEvent for ${event.transactionId}`,
+          { sufficient: event.isBalanceSufficient },
         );
 
         if (!event.isBalanceSufficient) {
+          const reason = 'Insufficient balance';
           this.loggingService.error(
-            `[WithdrawalSaga] Insufficient balance for transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for transaction ${event.transactionId}`,
           );
-
-          // Atualizar o status para FAILED
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Insufficient balance',
+            reason,
           );
-
-          // Não há compensação necessária, apenas finaliza o fluxo
-          return null;
+          return;
         }
 
-        // Se o saldo for suficiente, prossegue para reservar o saldo
-        return new ReserveBalanceCommand(
-          event.transactionId,
-          event.accountId,
-          event.amount,
+        const reserveBalancePayload = {
+          commandName: 'ReserveBalanceCommand',
+          payload: {
+            transactionId: event.transactionId,
+            accountId: event.accountId,
+            amount: event.amount,
+          },
+        };
+        await this.rabbitMQService.publishToExchange(
+          'commands.reserve_balance',
+          reserveBalancePayload,
+        );
+        this.loggingService.info(
+          `[WithdrawalSaga] Published ReserveBalanceCommand for ${event.transactionId}`,
         );
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in balanceChecked saga: ${error.message}`,
+          `[WithdrawalSaga] Error in balanceChecked saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -184,132 +156,52 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  balanceReserved = (events$: Observable<any>): Observable<ICommand> => {
+  balanceReserved = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceReservedEvent),
-      switchMap(async event => {
+      mergeMap(async (event: BalanceReservedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Balance reserved event received: ${JSON.stringify(
-            event,
-          )}`,
+          `[WithdrawalSaga] Handling BalanceReservedEvent for ${event.transactionId}`,
+          { success: event.success },
         );
 
         if (!event.success) {
+          const reason = 'Failed to reserve balance';
           this.loggingService.error(
-            `[WithdrawalSaga] Failed to reserve balance for transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for transaction ${event.transactionId}`,
           );
-
-          // Atualizar o status para FAILED
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Failed to reserve balance',
+            reason,
           );
-
-          // Não há compensação necessária nesta etapa, apenas finaliza o fluxo
-          return null;
+          return;
         }
 
-        // Atualizar status para RESERVED
         await this.updateTransactionStatus(
           event.transactionId,
           TransactionStatus.RESERVED,
         );
 
-        // Obter o contexto atual (se existir) e prosseguir com o processamento
-        this.loggingService.info(
-          `[WithdrawalSaga] Proceeding to process transaction ${event.transactionId} after successful balance reserve`,
+        const processPayload = {
+          commandName: 'ProcessTransactionCommand',
+          payload: {
+            transactionId: event.transactionId,
+          },
+        };
+
+        await this.rabbitMQService.publishToExchange(
+          'commands.process_transaction',
+          processPayload,
         );
-
-        // Obter o contexto atual (se existir)
-        const currentContext =
-          this.transactionContext.getTransactionContext(event.transactionId) ||
-          {};
-
-        // Se o contexto atual não tiver destinationAccountId, tentamos carregar do banco
-        if (!currentContext.destinationAccountId) {
-          this.loggingService.info(
-            `[WithdrawalSaga] Context incomplete for transaction ${event.transactionId}, loading details from database`,
-          );
-
-          await this.transactionContext.loadTransactionDetails(
-            event.transactionId,
-          );
-
-          // Obtém o contexto atualizado após carregar do banco
-          const updatedContext = this.transactionContext.getTransactionContext(
-            event.transactionId,
-          );
-
-          // Se ainda não temos o destinationAccountId, carregamos os detalhes do banco
-          if (!updatedContext || !updatedContext.destinationAccountId) {
-            this.loggingService.info(
-              `[WithdrawalSaga] Loading transaction details from database for ${event.transactionId}`,
-            );
-
-            const transaction = await this.transactionModel.findOne({
-              id: event.transactionId,
-            });
-
-            if (!transaction || !transaction.destinationAccountId) {
-              this.loggingService.error(
-                `[WithdrawalSaga] Failed to get destination account for transaction ${event.transactionId}`,
-              );
-
-              // Atualizar status para FAILED
-              await this.updateTransactionStatus(
-                event.transactionId,
-                TransactionStatus.FAILED,
-                'Failed to get destination account details',
-              );
-
-              return null;
-            }
-
-            // Atualizar o contexto com os dados do banco
-            await this.transactionContext.setTransactionContext(
-              event.transactionId,
-              {
-                ...updatedContext,
-                destinationAccountId: transaction.destinationAccountId,
-                description: transaction.description,
-              },
-            );
-
-            // Continuar o fluxo com o ProcessTransactionCommand usando os dados do banco
-            return new ProcessTransactionCommand(
-              event.transactionId,
-              event.accountId,
-              transaction.destinationAccountId,
-              event.amount,
-              transaction.description || 'Withdrawal operation',
-            );
-          }
-
-          // Se já temos os dados no contexto, continuar o fluxo normalmente
-          return new ProcessTransactionCommand(
-            event.transactionId,
-            event.accountId,
-            updatedContext.destinationAccountId,
-            event.amount,
-            updatedContext.description || 'Withdrawal operation',
-          );
-        }
-
-        // Se já temos todas as informações necessárias, podemos continuar o fluxo diretamente
-        return new ProcessTransactionCommand(
-          event.transactionId,
-          event.accountId,
-          currentContext.destinationAccountId,
-          event.amount,
-          currentContext.description || 'Withdrawal operation',
+        this.loggingService.info(
+          `[WithdrawalSaga] Published ProcessTransactionCommand for ${event.transactionId}`,
         );
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in balanceReserved saga: ${error.message}`,
+          `[WithdrawalSaga] Error in balanceReserved saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -317,59 +209,78 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  transactionProcessed = (events$: Observable<any>): Observable<ICommand> => {
+  transactionProcessed = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(TransactionProcessedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: TransactionProcessedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Transaction processed event received: ${JSON.stringify(
-            event,
-          )}`,
+          `[WithdrawalSaga] Handling TransactionProcessedEvent for ${event.transactionId}`,
+          { success: event.success },
         );
 
         if (!event.success) {
+          const reason = event.error || 'Transaction processing failed';
           this.loggingService.error(
-            `[WithdrawalSaga] Failed to process transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for ${event.transactionId}`,
           );
-
-          // Atualizar status para FAILED
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Failed to process transaction',
+            reason,
           );
 
-          // Compensação: liberar o saldo reservado
-          return new ReleaseBalanceCommand(
-            event.transactionId,
-            event.sourceAccountId,
-            event.amount,
+          if (!event.sourceAccountId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Cannot compensate failed processing for ${event.transactionId}: Missing sourceAccountId or amount in event. Manual intervention likely required.`,
+            );
+            return;
+          }
+
+          const releasePayload = {
+            commandName: 'ReleaseBalanceCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.sourceAccountId,
+              amount: event.amount,
+              reason: `Compensation due to processing failure: ${reason}`,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.release_balance',
+            releasePayload,
           );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published compensation (ReleaseBalanceCommand) for failed processing of ${event.transactionId}`,
+          );
+          return;
         }
 
-        // Atualizar status para PROCESSED e prosseguir com a confirmação
         await this.updateTransactionStatus(
           event.transactionId,
           TransactionStatus.PROCESSED,
         );
 
-        this.loggingService.info(
-          `[WithdrawalSaga] Transaction ${event.transactionId} processed successfully, proceeding to confirmation`,
+        const confirmPayload = {
+          commandName: 'ConfirmTransactionCommand',
+          payload: {
+            transactionId: event.transactionId,
+            sourceAccountId: event.sourceAccountId,
+            destinationAccountId: event.destinationAccountId,
+            amount: event.amount,
+          },
+        };
+        await this.rabbitMQService.publishToExchange(
+          'commands.confirm_transaction',
+          confirmPayload,
         );
-
-        // Continuar o fluxo com confirmação da transação
-        return new ConfirmTransactionCommand(
-          event.transactionId,
-          event.sourceAccountId,
-          event.destinationAccountId,
-          event.amount,
+        this.loggingService.info(
+          `[WithdrawalSaga] Published ConfirmTransactionCommand for ${event.transactionId}`,
         );
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in transactionProcessed saga: ${error.message}`,
+          `[WithdrawalSaga] Error in transactionProcessed saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -377,78 +288,93 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  transactionConfirmed = (events$: Observable<any>): Observable<ICommand> => {
+  transactionConfirmed = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(TransactionConfirmedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: TransactionConfirmedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Transaction confirmed event received: ${JSON.stringify(
-            event,
-          )}`,
+          `[WithdrawalSaga] Handling TransactionConfirmedEvent for ${event.transactionId}`,
+          { success: event.success },
         );
 
         if (!event.success) {
+          const reason = event.error || 'Transaction confirmation failed';
           this.loggingService.error(
-            `[WithdrawalSaga] Failed to confirm transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for ${event.transactionId}`,
           );
-
-          // Atualizar status para FAILED
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Failed to confirm transaction',
+            reason,
           );
 
-          // Compensação: liberar o saldo reservado
-          return new ReleaseBalanceCommand(
-            event.transactionId,
-            event.sourceAccountId,
-            event.amount,
+          if (!event.sourceAccountId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Cannot compensate failed confirmation for ${event.transactionId}: Missing sourceAccountId or amount in event. Manual intervention likely required.`,
+            );
+            return;
+          }
+
+          const releasePayload = {
+            commandName: 'ReleaseBalanceCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.sourceAccountId,
+              amount: event.amount,
+              reason: `Compensation due to confirmation failure: ${reason}`,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.release_balance',
+            releasePayload,
           );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published compensation (ReleaseBalanceCommand) for failed confirmation of ${event.transactionId}`,
+          );
+          return;
         }
 
-        // Atualizar status para CONFIRMED e verificar contexto
         await this.updateTransactionStatus(
           event.transactionId,
           TransactionStatus.CONFIRMED,
         );
 
-        this.loggingService.info(
-          `[WithdrawalSaga] Transaction ${event.transactionId} confirmed, proceeding to statement updates`,
-        );
+        if (!event.sourceAccountId || !event.amount) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Cannot proceed to update statement for ${event.transactionId}: Missing sourceAccountId or amount in TransactionConfirmedEvent. Marking as FAILED.`,
+          );
+          await this.updateTransactionStatus(
+            event.transactionId,
+            TransactionStatus.FAILED,
+            'Missing event details for statement update',
+          );
+          return;
+        }
 
-        // Garantir que temos o contexto completo para os próximos passos
-        const context =
-          this.transactionContext.getTransactionContext(event.transactionId) ||
-          {};
-
-        // Atualizar o contexto com as informações mais recentes da transação
-        await this.transactionContext.setTransactionContext(
-          event.transactionId,
-          {
-            ...context,
-            sourceAccountId: event.sourceAccountId,
+        const updateSourceStmtPayload = {
+          commandName: 'UpdateAccountStatementCommand',
+          payload: {
+            transactionId: event.transactionId,
+            accountId: event.sourceAccountId,
+            amount: -event.amount,
+            description: event.description || 'Withdrawal Debit',
+            transactionTimestamp: new Date(),
+            isSource: true,
             destinationAccountId: event.destinationAccountId,
-            amount: event.amount,
-            status: TransactionStatus.CONFIRMED,
-            confirmedAt: new Date(),
           },
+        };
+        await this.rabbitMQService.publishToExchange(
+          'commands.update_statement',
+          updateSourceStmtPayload,
         );
-
-        // Prosseguir para atualizar o extrato da conta de origem
-        return new UpdateAccountStatementCommand(
-          event.transactionId,
-          event.sourceAccountId,
-          event.amount,
-          'DEBIT',
-          'Withdrawal operation',
+        this.loggingService.info(
+          `[WithdrawalSaga] Published UpdateAccountStatementCommand (Source) for ${event.transactionId}`,
         );
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in transactionConfirmed saga: ${error.message}`,
+          `[WithdrawalSaga] Error in transactionConfirmed saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -456,84 +382,143 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  sourceStatementUpdated = (events$: Observable<any>): Observable<ICommand> => {
+  sourceStatementUpdated = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(StatementUpdatedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: StatementUpdatedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Source statement updated event received: ${JSON.stringify(
+          `[WithdrawalSaga] TEMP LOG: sourceStatementUpdated received event payload: ${JSON.stringify(
             event,
           )}`,
         );
 
-        if (!event.success) {
-          this.loggingService.error(
-            `[WithdrawalSaga] Failed to update source statement for transaction ${event.transactionId}`,
-          );
+        this.loggingService.info(
+          `[WithdrawalSaga] Handling StatementUpdatedEvent (Source) for ${event.transactionId}`,
+          { success: event.success, accountId: event.accountId },
+        );
 
-          // Atualizar status para FAILED
+        if (!event.success) {
+          const reason = event.error || 'Source statement update failed';
+          this.loggingService.error(
+            `[WithdrawalSaga] ${reason} for ${event.transactionId}`,
+          );
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Failed to update source account statement',
+            reason,
           );
 
-          return null;
-        }
-
-        // Verifica se existe uma conta de destino
-        const context = this.transactionContext.getTransactionContext(
-          event.transactionId,
-        );
-
-        if (!context || !context.destinationAccountId) {
-          this.loggingService.warn(
-            `[WithdrawalSaga] Missing destination account for transaction ${event.transactionId}`,
-          );
-
-          // Obtém o usuário origem para notificá-lo
-          const sourceUser =
-            await this.transactionContext.loadUserFromAccountId(
-              event.accountId,
+          if (!event.accountId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Cannot compensate failed source statement update for ${event.transactionId}: Missing accountId or amount in event. Manual intervention likely required.`,
             );
+            return;
+          }
 
-          if (!sourceUser || !sourceUser.id) {
-            return null;
-          } // No destination account, this is a direct withdrawal
-          // Mark as COMPLETED and notify user
-          await this.updateTransactionStatus(
-            event.transactionId,
-            TransactionStatus.COMPLETED,
+          const releasePayload = {
+            commandName: 'ReleaseBalanceCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.accountId,
+              amount: Math.abs(event.amount),
+              reason: `Compensation due to source statement failure: ${reason}`,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.release_balance',
+            releasePayload,
           );
-
           this.loggingService.info(
-            `[WithdrawalSaga] Direct withdrawal ${event.transactionId} completed, notifying user`,
+            `[WithdrawalSaga] Published compensation (ReleaseBalance) for failed source statement update of ${event.transactionId}`,
           );
-
-          return new NotifyUserCommand(
-            sourceUser.id,
-            event.transactionId,
-            event.accountId,
-            event.amount,
-            NotificationType.WITHDRAWAL,
-            NotificationStatus.SUCCESS,
-          );
+          return;
         }
 
-        // Se há uma conta de destino, prossegue para atualizar seu extrato
-        return new UpdateAccountStatementCommand(
-          event.transactionId,
-          context.destinationAccountId,
-          event.amount,
-          'CREDIT',
-          'Deposit from withdrawal operation',
-        );
+        if (event.destinationAccountId) {
+          if (!event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Missing amount in StatementUpdatedEvent needed for destination update for ${event.transactionId}. Cannot proceed.`,
+            );
+            await this.updateTransactionStatus(
+              event.transactionId,
+              TransactionStatus.FAILED,
+              'Missing amount for destination statement',
+            );
+            return;
+          }
+          const updateDestStmtPayload = {
+            commandName: 'UpdateAccountStatementCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.destinationAccountId,
+              amount: Math.abs(event.amount),
+              description: event.description || 'Withdrawal Credit',
+              transactionTimestamp: new Date(),
+              isSource: false,
+              sourceAccountId: event.accountId,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.update_statement',
+            updateDestStmtPayload,
+          );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published UpdateAccountStatementCommand (Destination) for ${event.transactionId}`,
+          );
+        } else {
+          this.loggingService.info(
+            `[WithdrawalSaga] No destination account for ${event.transactionId}, proceeding to notify source user.`,
+          );
+
+          if (!event.sourceUserId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Missing sourceUserId or amount in StatementUpdatedEvent for final notification of ${event.transactionId}. Completing without notification.`,
+            );
+            await this.updateTransactionStatus(
+              event.transactionId,
+              TransactionStatus.COMPLETED,
+              'Completed with missing details for notification',
+            );
+            this.eventBus.publish(
+              new TransactionCompletedEvent(
+                event.transactionId,
+                event.accountId,
+                null,
+                Math.abs(event.amount),
+                true,
+              ),
+            );
+            return;
+          }
+
+          const notifySourcePayload = {
+            commandName: 'NotifyUserCommand',
+            payload: {
+              transactionId: event.transactionId,
+              userId: event.sourceUserId,
+              accountId: event.accountId,
+              notificationType: NotificationType.WITHDRAWAL,
+              status: NotificationStatus.SUCCESS,
+              message: `Withdrawal of ${Math.abs(event.amount)} successful.`,
+              details: {
+                transactionId: event.transactionId,
+                amount: Math.abs(event.amount),
+              },
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.notify_user',
+            notifySourcePayload,
+          );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published NotifyUserCommand (Source) for ${event.transactionId} (no destination)`,
+          );
+        }
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in sourceStatementUpdated saga: ${error.message}`,
+          `[WithdrawalSaga] Error in sourceStatementUpdated saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -543,151 +528,218 @@ export class WithdrawalSaga {
   @Saga()
   destinationStatementUpdated = (
     events$: Observable<any>,
-  ): Observable<ICommand> => {
+  ): Observable<void> => {
     return events$.pipe(
       ofType(StatementUpdatedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: StatementUpdatedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Destination statement updated event received: ${JSON.stringify(
+          `[WithdrawalSaga] TEMP LOG: destinationStatementUpdated received event payload: ${JSON.stringify(
             event,
           )}`,
+        );
+
+        this.loggingService.info(
+          `[WithdrawalSaga] Handling StatementUpdatedEvent (Destination) for ${event.transactionId}`,
+          { success: event.success, accountId: event.accountId },
+        );
+
+        if (!event.success) {
+          const reason = event.error || 'Destination statement update failed';
+          this.loggingService.error(
+            `[WithdrawalSaga] ${reason} for ${event.transactionId}`,
+          );
+          await this.updateTransactionStatus(
+            event.transactionId,
+            TransactionStatus.FAILED,
+            reason,
+          );
+
+          if (!event.sourceAccountId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Cannot compensate failed destination statement update for ${event.transactionId}: Missing sourceAccountId or amount in event. Manual intervention likely required.`,
+            );
+            return;
+          }
+
+          const releasePayload = {
+            commandName: 'ReleaseBalanceCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.sourceAccountId,
+              amount: Math.abs(event.amount),
+              reason: `Compensation due to destination statement failure: ${reason}`,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.release_balance',
+            releasePayload,
+          );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published compensation (ReleaseBalance) for failed destination statement update of ${event.transactionId}`,
+          );
+          return;
+        }
+
+        if (!event.sourceUserId || !event.sourceAccountId || !event.amount) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Missing context details in StatementUpdatedEvent for notifying source user for ${event.transactionId}`,
+          );
+          await this.updateTransactionStatus(
+            event.transactionId,
+            TransactionStatus.COMPLETED,
+            'Completed with missing details for source notification',
+          );
+          this.eventBus.publish(
+            new TransactionCompletedEvent(
+              event.transactionId,
+              event.sourceAccountId,
+              event.accountId,
+              Math.abs(event.amount),
+              true,
+            ),
+          );
+          return;
+        }
+
+        const notifySourcePayload = {
+          commandName: 'NotifyUserCommand',
+          payload: {
+            transactionId: event.transactionId,
+            userId: event.sourceUserId,
+            accountId: event.sourceAccountId,
+            notificationType: NotificationType.WITHDRAWAL,
+            status: NotificationStatus.SUCCESS,
+            message: `Withdrawal of ${Math.abs(event.amount)} from account ${
+              event.sourceAccountId
+            } completed.`,
+            details: {
+              transactionId: event.transactionId,
+              amount: Math.abs(event.amount),
+            },
+          },
+        };
+        await this.rabbitMQService.publishToExchange(
+          'commands.notify_user',
+          notifySourcePayload,
+        );
+        this.loggingService.info(
+          `[WithdrawalSaga] Published NotifyUserCommand (Source) for ${event.transactionId}`,
+        );
+      }),
+      catchError((error, caught) => {
+        this.loggingService.error(
+          `[WithdrawalSaga] Error in destinationStatementUpdated saga step: ${error.message}`,
+          { stack: error.stack },
+        );
+        return of();
+      }),
+    );
+  };
+
+  @Saga()
+  sourceUserNotified = (events$: Observable<any>): Observable<void> => {
+    return events$.pipe(
+      ofType(UserNotifiedEvent),
+      mergeMap(async (event: UserNotifiedEvent) => {
+        this.loggingService.info(
+          `[WithdrawalSaga] TEMP LOG: sourceUserNotified received event payload: ${JSON.stringify(
+            event,
+          )}`,
+        );
+
+        this.loggingService.info(
+          `[WithdrawalSaga] Handling UserNotifiedEvent (Source) for ${event.transactionId}`,
+          { success: event.success, userId: event.userId },
         );
 
         if (!event.success) {
           this.loggingService.error(
-            `[WithdrawalSaga] Failed to update destination statement for transaction ${event.transactionId}`,
+            `[WithdrawalSaga] Failed to notify source user for transaction ${event.transactionId}`,
           );
+        }
 
-          // Atualizar status para FAILED
+        if (event.destinationUserId) {
+          if (!event.destinationAccountId || !event.amount) {
+            this.loggingService.error(
+              `[WithdrawalSaga] Missing destination account ID or amount in UserNotifiedEvent for final notification of ${event.transactionId}. Completing without dest notification.`,
+            );
+            await this.updateTransactionStatus(
+              event.transactionId,
+              TransactionStatus.COMPLETED,
+              'Completed with missing details for dest notification',
+            );
+            this.eventBus.publish(
+              new TransactionCompletedEvent(
+                event.transactionId,
+                event.sourceAccountId,
+                null,
+                Math.abs(event.amount),
+                true,
+              ),
+            );
+            return;
+          }
+
+          const notifyDestPayload = {
+            commandName: 'NotifyUserCommand',
+            payload: {
+              transactionId: event.transactionId,
+              userId: event.destinationUserId,
+              accountId: event.destinationAccountId,
+              notificationType: NotificationType.DEPOSIT,
+              status: NotificationStatus.SUCCESS,
+              message: `Account ${event.destinationAccountId} credited (related to withdrawal ${event.transactionId}).`,
+              details: {
+                transactionId: event.transactionId,
+                amount: Math.abs(event.amount),
+              },
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.notify_user',
+            notifyDestPayload,
+          );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published NotifyUserCommand (Destination) for ${event.transactionId}`,
+          );
+        } else {
+          this.loggingService.info(
+            `[WithdrawalSaga] No destination user for ${event.transactionId}, marking transaction as complete after source notification.`,
+          );
           await this.updateTransactionStatus(
             event.transactionId,
-            TransactionStatus.FAILED,
-            'Failed to update destination account statement',
+            TransactionStatus.COMPLETED,
           );
-
-          return null;
-        }
-
-        // Buscar o contexto da transação
-        const context = this.transactionContext.getTransactionContext(
-          event.transactionId,
-        );
-
-        if (!context || !context.sourceAccountId) {
-          return null;
-        }
-
-        // Verifica se a conta atualizada é a conta de destino
-        // (comparando com a fonte do contexto)
-        if (context.sourceAccountId === event.accountId) {
-          // Se for a conta de origem, ignora (já tratamos no saga anterior)
-          return null;
-        }
-
-        // Como é a conta de destino, notificamos os usuários
-        // Primeiro o usuário de origem
-        const sourceUser = await this.transactionContext.loadUserFromAccountId(
-          context.sourceAccountId,
-        );
-
-        if (!sourceUser || !sourceUser.id) {
-          this.loggingService.warn(
-            `[WithdrawalSaga] Missing source user ID for transaction ${event.transactionId}`,
-          );
-          return null;
-        }
-
-        // Notificar usuário origem
-        return new NotifyUserCommand(
-          sourceUser.id,
-          event.transactionId,
-          context.sourceAccountId,
-          context.amount,
-          NotificationType.WITHDRAWAL,
-          NotificationStatus.SUCCESS,
-        );
-      }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
-        this.loggingService.error(
-          `[WithdrawalSaga] Error in destinationStatementUpdated saga: ${error.message}`,
-        );
-        return of();
-      }),
-    );
-  };
-
-  @Saga()
-  sourceUserNotified = (events$: Observable<any>): Observable<ICommand> => {
-    return events$.pipe(
-      ofType(UserNotifiedEvent),
-      mergeMap(async event => {
-        if (event.type === NotificationType.WITHDRAWAL) {
-          this.loggingService.info(
-            `[WithdrawalSaga] Source user notified event received: ${JSON.stringify(
-              event,
-            )}`,
-          );
-
-          if (!event.success) {
-            this.loggingService.error(
-              `[WithdrawalSaga] Failed to notify source user for transaction ${event.transactionId}`,
+          if (!event.sourceAccountId || !event.amount) {
+            this.loggingService.warn(
+              `[WithdrawalSaga] Missing details in UserNotifiedEvent for publishing final TransactionCompletedEvent for ${event.transactionId}`,
             );
-            // Não interrompemos a saga por falha na notificação
-          }
-
-          // Buscar o contexto da transação
-          const context = this.transactionContext.getTransactionContext(
-            event.transactionId,
-          );
-
-          if (!context || !context.destinationAccountId) {
-            return null;
-          }
-
-          // Se este usuário notificado for da conta de origem
-          if (event.accountId === context.sourceAccountId) {
-            // Agora notificamos o usuário de destino
-            const destUser =
-              await this.transactionContext.loadUserFromAccountId(
-                context.destinationAccountId,
-              );
-
-            if (!destUser || !destUser.id) {
-              this.loggingService.warn(
-                `[WithdrawalSaga] Missing destination user or account for transaction ${event.transactionId}`,
-              );
-
-              // Atualizar status para COMPLETED
-              await this.updateTransactionStatus(
+            this.eventBus.publish(
+              new TransactionCompletedEvent(
                 event.transactionId,
-                TransactionStatus.COMPLETED,
-              );
-
-              return null;
-            }
-
-            // Continue to notify destination user first
-            // We'll mark as COMPLETED only after all notifications
-            return new NotifyUserCommand(
-              destUser.id,
-              event.transactionId,
-              context.destinationAccountId,
-              context.amount,
-              NotificationType.DEPOSIT,
-              NotificationStatus.SUCCESS,
+                null,
+                null,
+                null,
+                true,
+              ),
+            );
+          } else {
+            this.eventBus.publish(
+              new TransactionCompletedEvent(
+                event.transactionId,
+                event.sourceAccountId,
+                null,
+                Math.abs(event.amount),
+                true,
+              ),
             );
           }
         }
-
-        return null;
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in sourceUserNotified saga: ${error.message}`,
+          `[WithdrawalSaga] Error in sourceUserNotified saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -695,75 +747,67 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  destinationUserNotified = (
-    events$: Observable<any>,
-  ): Observable<ICommand> => {
+  destinationUserNotified = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(UserNotifiedEvent),
-      mergeMap(async event => {
+      mergeMap(async (event: UserNotifiedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Destination user notified event received: ${JSON.stringify(
+          `[WithdrawalSaga] TEMP LOG: destinationUserNotified received event payload: ${JSON.stringify(
             event,
           )}`,
+        );
+
+        this.loggingService.info(
+          `[WithdrawalSaga] Handling UserNotifiedEvent (Destination) for ${event.transactionId}`,
+          { success: event.success, userId: event.userId },
         );
 
         if (!event.success) {
           this.loggingService.error(
             `[WithdrawalSaga] Failed to notify destination user for transaction ${event.transactionId}`,
           );
-          // Não interrompemos a saga por falha na notificação
         }
 
-        // Obter o contexto da transação
-        const context = this.transactionContext.getTransactionContext(
-          event.transactionId,
+        this.loggingService.info(
+          `[WithdrawalSaga] Transaction ${event.transactionId} reached final notification stage. Marking as complete.`,
         );
-
-        if (!context) {
-          this.loggingService.warn(
-            `[WithdrawalSaga] No context found for transaction ${event.transactionId}`,
-          );
-          return null;
-        }
-
-        // Verificar se este evento é para o destino (e não para a origem)
-        if (event.type !== NotificationType.DEPOSIT) {
-          // Ignorar este evento, pois é da origem
-          return null;
-        }
-
-        // Após notificar o destinatário, marcar a transação como COMPLETED
         await this.updateTransactionStatus(
           event.transactionId,
           TransactionStatus.COMPLETED,
         );
-
-        this.loggingService.info(
-          `[WithdrawalSaga] Transaction ${event.transactionId} marked as COMPLETED after successful notifications`,
-        );
-
-        // Publicar evento explícito de conclusão
-        const completedEvent = new TransactionCompletedEvent(
-          event.transactionId,
-          context.sourceAccountId,
-          context.destinationAccountId,
-          context.amount,
-          true,
-        );
-
-        this.eventBus.publish(completedEvent);
-
-        // Limpar o contexto da transação que não é mais necessário
-        this.transactionContext.clearTransactionContext(event.transactionId);
-
-        // Esta é a última etapa da saga, não há mais comandos para emitir
-        return null;
+        if (
+          !event.sourceAccountId ||
+          !event.destinationAccountId ||
+          !event.amount
+        ) {
+          this.loggingService.warn(
+            `[WithdrawalSaga] Missing details in UserNotifiedEvent for publishing final TransactionCompletedEvent for ${event.transactionId}`,
+          );
+          this.eventBus.publish(
+            new TransactionCompletedEvent(
+              event.transactionId,
+              null,
+              null,
+              null,
+              true,
+            ),
+          );
+        } else {
+          this.eventBus.publish(
+            new TransactionCompletedEvent(
+              event.transactionId,
+              event.sourceAccountId,
+              event.destinationAccountId,
+              Math.abs(event.amount),
+              true,
+            ),
+          );
+        }
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in destinationUserNotified saga: ${error.message}`,
+          `[WithdrawalSaga] Error in destinationUserNotified saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
@@ -771,108 +815,67 @@ export class WithdrawalSaga {
   };
 
   @Saga()
-  balanceReleased = (events$: Observable<any>): Observable<ICommand> => {
+  balanceReleased = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceReleasedEvent),
-      mergeMap(async event => {
+      tap(async (event: BalanceReleasedEvent) => {
         this.loggingService.info(
-          `[WithdrawalSaga] Balance released event received: ${JSON.stringify(
-            event,
-          )}`,
+          `[WithdrawalSaga] Handling BalanceReleasedEvent (Compensation Result) for ${event.transactionId}`,
+          { success: event.success },
         );
+
+        // Use a default reason, as event does not carry it anymore.
+        const failureReason = 'Compensation: Balance released';
 
         if (!event.success) {
+          const reason = `CRITICAL: Failed to release balance during compensation`;
           this.loggingService.error(
-            `[WithdrawalSaga] Failed to release balance for transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for transaction ${event.transactionId}`,
           );
-        }
-
-        // Marca a transação como cancelada (compensation action)
-        await this.updateTransactionStatus(
-          event.transactionId,
-          TransactionStatus.CANCELED,
-          event.success ? undefined : 'Failed to release balance',
-        );
-
-        // Buscar contexto para notificar usuário
-        const context = this.transactionContext.getTransactionContext(
-          event.transactionId,
-        );
-
-        if (!context || !context.sourceAccountId) {
-          return null;
-        }
-
-        // Notificar usuário sobre o cancelamento
-        const sourceUser = await this.transactionContext.loadUserFromAccountId(
-          context.sourceAccountId,
-        );
-
-        if (!sourceUser || !sourceUser.id) {
-          return null;
-        }
-
-        return new NotifyUserCommand(
-          sourceUser.id,
-          event.transactionId,
-          context.sourceAccountId,
-          context.amount,
-          NotificationType.WITHDRAWAL,
-          NotificationStatus.FAILED,
-        );
-      }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
-        this.loggingService.error(
-          `[WithdrawalSaga] Error in balanceReleased saga: ${error.message}`,
-        );
-        return of();
-      }),
-    );
-  };
-
-  @Saga()
-  transactionCompleted = (events$: Observable<any>): Observable<ICommand> => {
-    return events$.pipe(
-      ofType(TransactionCompletedEvent),
-      mergeMap(async event => {
-        this.loggingService.info(
-          `[WithdrawalSaga] Transaction completed event received: ${JSON.stringify(
-            event,
-          )}`,
-        );
-
-        if (!event.success) {
-          this.loggingService.error(
-            `[WithdrawalSaga] Failed to complete transaction ${event.transactionId}`,
-          );
-
-          // Atualizar status para FAILED
           await this.updateTransactionStatus(
             event.transactionId,
             TransactionStatus.FAILED,
-            'Failed to complete transaction',
+            reason,
           );
-
-          return null;
+        } else {
+          this.loggingService.info(
+            `[WithdrawalSaga] Compensation successful: Balance released for ${event.transactionId}. Final status: FAILED. Reason: ${failureReason}`,
+          );
+          await this.updateTransactionStatus(
+            event.transactionId,
+            TransactionStatus.FAILED,
+            failureReason,
+          );
         }
-
-        this.loggingService.info(
-          `[WithdrawalSaga] Transaction ${event.transactionId} completed successfully`,
-        );
-
-        // Não há mais comandos para emitir, o fluxo termina aqui
-        return null;
       }),
-      // Filtra valores nulos (quando o fluxo termina sem comandos)
-      mergeMap(command => (command ? of(command) : of())),
-      catchError(error => {
+      catchError((error, caught) => {
         this.loggingService.error(
-          `[WithdrawalSaga] Error in transactionCompleted saga: ${error.message}`,
+          `[WithdrawalSaga] Error in balanceReleased saga step: ${error.message}`,
+          { stack: error.stack },
         );
         return of();
       }),
+      mergeMap(() => of()),
+    );
+  };
+
+  @Saga()
+  transactionCompleted = (events$: Observable<any>): Observable<void> => {
+    return events$.pipe(
+      ofType(TransactionCompletedEvent),
+      tap((event: TransactionCompletedEvent) => {
+        this.loggingService.info(
+          `[WithdrawalSaga] Transaction ${event.transactionId} officially completed. Performing cleanup.`,
+        );
+      }),
+      catchError((error, caught) => {
+        this.loggingService.error(
+          `[WithdrawalSaga] Error in transactionCompleted saga (cleanup) step: ${error.message}`,
+          { stack: error.stack },
+        );
+        return of();
+      }),
+      mergeMap(() => of()),
     );
   };
 }

@@ -1,121 +1,124 @@
-import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { AccountEntity } from '../../../accounts/models/account.entity';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { ReserveBalanceCommand } from '../../commands/impl/reserve-balance.command';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-@CommandHandler(ReserveBalanceCommand)
-export class ReserveBalanceHandler
-  implements ICommandHandler<ReserveBalanceCommand>
-{
+// Define the expected message structure from RabbitMQ
+interface ReserveBalanceMessage {
+  commandName: 'ReserveBalanceCommand';
+  payload: {
+    transactionId: string;
+    accountId: string; // Source Account ID
+    amount: number;
+  };
+}
+
+@Injectable()
+export class ReserveBalanceHandler {
   constructor(
-    @InjectRepository(AccountEntity)
-    private accountRepository: Repository<AccountEntity>,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
     private eventBus: EventBus,
   ) {}
 
-  async execute(command: ReserveBalanceCommand): Promise<void> {
-    const { transactionId, accountId, amount } = command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange', // Ensure this matches your config
+    routingKey: 'commands.reserve_balance',
+    queue: 'reserve_balance_commands_queue', // Define a queue name
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleReserveBalanceCommand(msg: ReserveBalanceMessage): Promise<void> {
+    const handlerName = 'ReserveBalanceHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[ReserveBalanceHandler] Reserving balance for account ${accountId}, amount: ${amount}`,
-    );
+    const { transactionId, accountId, amount } = msg.payload;
 
-    const queryRunner =
-      this.accountRepository.manager.connection.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    this.loggingService.logHandlerStart(handlerName, {
+      transactionId,
+      accountId,
+      amount,
+    });
 
     try {
-      // Bloquear a linha da conta para garantir exclusividade
-      const account = await queryRunner.manager
-        .getRepository(AccountEntity)
-        .findOne({
-          where: { id: accountId },
-          lock: { mode: 'pessimistic_write' },
-        });
-
-      if (!account) {
-        throw new NotFoundException(`Account with ID "${accountId}" not found`);
-      }
-
-      // Verificar saldo novamente (garantia adicional)
-      if (account.balance < amount) {
-        throw new Error(`Insufficient balance in account ${accountId}`);
-      }
-
-      // Carregar o agregado de transação
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
-      // Se o agregado não for encontrado, é um erro real no fluxo, pois deveria existir
       if (!transactionAggregate) {
         this.loggingService.error(
-          `[ReserveBalanceHandler] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. This indicates an issue in the event flow or persistence. The 'transaction.created' event might not have been processed or saved correctly.`,
+          `[${handlerName}] CRITICAL: Transaction aggregate not found for ID: ${transactionId}. Cannot reserve balance.`,
+          { transactionId, accountId, amount },
         );
-        // Lançar um erro claro indicando que o agregado não existe quando deveria.
         throw new NotFoundException(
           `Transaction aggregate with ID "${transactionId}" not found. Cannot reserve balance.`,
         );
       }
 
-      // Atualizar o status da transação no agregado (via evento)
       transactionAggregate.reserveBalance(
         transactionId,
         accountId,
         amount,
-        true, // Assumindo sucesso aqui, pois o agregado foi encontrado
+        true,
       );
 
-      // Aplicar e publicar os eventos
       await this.transactionAggregateRepository.save(transactionAggregate);
 
-      // Commit da transação
-      await queryRunner.commitTransaction();
-
-      this.loggingService.info(
-        `[ReserveBalanceHandler] Successfully reserved balance for account ${accountId}`,
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.loggingService.logCommandSuccess(
+        handlerName,
+        { transactionId, accountId, amount },
+        executionTime,
+        { operation: 'balance_reservation_event_published' },
       );
     } catch (error) {
-      // Em caso de erro, fazer rollback da transação
-      await queryRunner.rollbackTransaction();
-
+      const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.error(
-        `[ReserveBalanceHandler] Error reserving balance: ${error.message}`,
+        `[${handlerName}] Error reserving balance (applying event): ${error.message}`,
+        {
+          transactionId,
+          accountId,
+          amount,
+          error: error.stack,
+          payload: msg.payload,
+        },
       );
 
-      // Tentar carregar o agregado de transação
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
           transactionAggregate.reserveBalance(
             transactionId,
             accountId,
             amount,
             false,
           );
-
-          // Aplicar e publicar os eventos
           await this.transactionAggregateRepository.save(transactionAggregate);
+          this.loggingService.warn(
+            `[${handlerName}] Recorded balance reservation failure in aggregate due to error.`,
+            { transactionId },
+          );
+        } else {
+          this.loggingService.error(
+            `[${handlerName}] CRITICAL: Aggregate ${transactionId} not found even for error reporting. Cannot publish failure event.`,
+            { error: error.stack },
+          );
         }
       } catch (aggError) {
         this.loggingService.error(
-          `[ReserveBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+          `[${handlerName}] Error saving aggregate during error handling: ${aggError.message}`,
+          { transactionId, error: aggError.stack },
         );
       }
 
       throw error;
     } finally {
-      // Liberar o queryRunner independente do resultado
-      await queryRunner.release();
+      this.loggingService.info(
+        `[${handlerName}] Finished processing message for ${transactionId}.`,
+      );
     }
   }
 }

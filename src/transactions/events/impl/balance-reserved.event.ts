@@ -4,5 +4,6 @@ export class BalanceReservedEvent {
     public readonly accountId: string,
     public readonly amount: number,
     public readonly success: boolean,
+    public readonly error?: string,
   ) {}
 }

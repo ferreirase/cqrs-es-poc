@@ -1,16 +1,25 @@
-import { NotFoundException } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { CheckAccountBalanceCommand } from '../../commands/impl/check-account-balance.command';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-@CommandHandler(CheckAccountBalanceCommand)
-export class CheckAccountBalanceHandler
-  implements ICommandHandler<CheckAccountBalanceCommand>
-{
+// Define the expected message structure
+interface CheckBalanceMessage {
+  commandName: 'CheckAccountBalanceCommand';
+  payload: {
+    transactionId: string;
+    accountId: string;
+    amount: number;
+  };
+}
+
+@Injectable()
+/* implements ICommandHandler<CheckAccountBalanceCommand> */
+export class CheckAccountBalanceHandler {
   constructor(
     @InjectRepository(AccountEntity)
     private accountRepository: Repository<AccountEntity>,
@@ -19,12 +28,26 @@ export class CheckAccountBalanceHandler
     private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  async execute(command: CheckAccountBalanceCommand): Promise<void> {
-    const { transactionId, accountId, amount } = command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange', // Ensure this matches your config
+    routingKey: 'commands.check_balance',
+    queue: 'check_balance_commands_queue', // Define a queue name
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleCheckBalanceCommand(msg: CheckBalanceMessage): Promise<void> {
+    const handlerName = 'CheckAccountBalanceHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[CheckAccountBalanceHandler] Checking balance for account ${accountId}, amount: ${amount}`,
-    );
+    // Extract data from message
+    const { transactionId, accountId, amount } = msg.payload;
+
+    this.loggingService.logHandlerStart(handlerName, {
+      transactionId,
+      accountId,
+      amount,
+    });
 
     try {
       const account = await this.accountRepository.findOne({
@@ -38,10 +61,11 @@ export class CheckAccountBalanceHandler
       const isBalanceSufficient = account.balance >= amount;
 
       this.loggingService.info(
-        `[CheckAccountBalanceHandler] Account ${accountId} has ${account.balance} balance, required: ${amount}, sufficient: ${isBalanceSufficient}`,
+        `[${handlerName}] Account ${accountId} balance: ${account.balance}, required: ${amount}, sufficient: ${isBalanceSufficient}`,
+        { transactionId },
       );
 
-      // Carregar o agregado de transação
+      // Load the transaction aggregate
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
@@ -51,7 +75,7 @@ export class CheckAccountBalanceHandler
         );
       }
 
-      // Atualizar o status da transação no agregado (via evento)
+      // Update transaction status in the aggregate (via event)
       transactionAggregate.checkBalance(
         transactionId,
         accountId,
@@ -59,20 +83,30 @@ export class CheckAccountBalanceHandler
         amount,
       );
 
-      // Aplicar e publicar os eventos
+      // Apply and publish events (e.g., BalanceCheckedEvent)
       await this.transactionAggregateRepository.save(transactionAggregate);
+
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.loggingService.logCommandSuccess(
+        handlerName,
+        { transactionId, accountId, isBalanceSufficient },
+        executionTime,
+        { operation: 'balance_checked_and_event_published' },
+      );
     } catch (error) {
+      const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.error(
-        `[CheckAccountBalanceHandler] Error checking balance: ${error.message}`,
+        `[${handlerName}] Error checking balance: ${error.message}`,
+        { transactionId, accountId, amount, error: error.stack },
       );
 
-      // Tentar carregar o agregado de transação
+      // Attempt to load the transaction aggregate to record the failure
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
+          // Update transaction status in the aggregate (failure event)
           transactionAggregate.checkBalance(
             transactionId,
             accountId,
@@ -80,12 +114,22 @@ export class CheckAccountBalanceHandler
             amount,
           );
 
-          // Aplicar e publicar os eventos
+          // Apply and publish failure event
           await this.transactionAggregateRepository.save(transactionAggregate);
+          this.loggingService.warn(
+            `[${handlerName}] Recorded balance check failure in aggregate due to error.`,
+            { transactionId },
+          );
+        } else {
+          this.loggingService.error(
+            `[${handlerName}] Could not find aggregate ${transactionId} to record balance check failure.`,
+            { error: error.stack },
+          );
         }
       } catch (aggError) {
         this.loggingService.error(
-          `[CheckAccountBalanceHandler] Error updating transaction aggregate: ${aggError.message}`,
+          `[${handlerName}] Error updating transaction aggregate after balance check failure: ${aggError.message}`,
+          { transactionId, error: aggError.stack },
         );
       }
 

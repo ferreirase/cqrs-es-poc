@@ -1,92 +1,185 @@
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
+import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Model } from 'mongoose';
 import { Repository } from 'typeorm';
+import { AccountDocument } from '../../../accounts/models/account.schema';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { UserEntity } from '../../../users/models/user.entity';
-import { NotifyUserCommand } from '../../commands/impl/notify-user.command';
+import { UserDocument } from '../../../users/models/user.schema';
 import { UserNotifiedEvent } from '../../events/impl/user-notified.event';
 import {
   NotificationStatus,
   NotificationType,
 } from '../../models/notification.enum';
+import { TransactionEntity } from '../../models/transaction.entity';
 
-@CommandHandler(NotifyUserCommand)
-export class NotifyUserHandler implements ICommandHandler<NotifyUserCommand> {
+interface NotifyUserMessage {
+  commandName: 'NotifyUserCommand';
+  payload: {
+    transactionId: string;
+    userId: string;
+    accountId: string;
+    notificationType: NotificationType;
+    status: NotificationStatus;
+    message: string;
+    details: { transactionId: string; amount: number };
+  };
+}
+
+@Injectable()
+export class NotifyUserHandler {
   constructor(
     @InjectRepository(UserEntity)
     private userRepository: Repository<UserEntity>,
+    @InjectRepository(TransactionEntity)
+    private transactionEntityRepository: Repository<TransactionEntity>,
+    @InjectModel(AccountDocument.name)
+    private accountModel: Model<AccountDocument>,
+    @InjectModel(UserDocument.name)
+    private userModel: Model<UserDocument>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
   ) {}
 
-  async execute(command: NotifyUserCommand): Promise<void> {
-    const { userId, transactionId, accountId, amount, type, status } = command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange',
+    routingKey: 'commands.notify_user',
+    queue: 'notify_user_commands_queue',
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleNotifyUserCommand(msg: NotifyUserMessage): Promise<void> {
+    const handlerName = 'NotifyUserHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[NotifyUserHandler] Notifying user ${userId} about transaction ${transactionId}, type: ${type}, status: ${status}`,
+    const {
+      userId,
+      transactionId,
+      accountId,
+      notificationType,
+      status,
+      message,
+      details,
+    } = msg.payload;
+    const amount = details.amount;
+
+    this.loggingService.logHandlerStart(handlerName, { ...msg.payload });
+
+    let notificationSuccess = false;
+    let notificationError: string | undefined = undefined;
+    let transactionDetails: TransactionEntity | null = null;
+    let sourceUserId: string | undefined = undefined;
+    let destinationUserId: string | undefined = undefined;
+
+    try {
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      if (!user) {
+        throw new Error(`User with ID "${userId}" not found for notification.`);
+      }
+      const userName = user.name || 'Cliente';
+
+      try {
+        transactionDetails = await this.transactionEntityRepository.findOne({
+          where: { id: transactionId },
+        });
+        if (transactionDetails) {
+          if (transactionDetails.sourceAccountId) {
+            const sourceAcc = await this.accountModel.findOne({
+              id: transactionDetails.sourceAccountId,
+            });
+            if (sourceAcc?.owner) sourceUserId = sourceAcc.owner;
+          }
+          if (transactionDetails.destinationAccountId) {
+            const destAcc = await this.accountModel.findOne({
+              id: transactionDetails.destinationAccountId,
+            });
+            if (destAcc?.owner) destinationUserId = destAcc.owner;
+          }
+        }
+      } catch (fetchError) {
+        this.loggingService.warn(
+          `[${handlerName}] Error fetching transaction/user context for ${transactionId}: ${fetchError.message}`,
+        );
+      }
+
+      const finalMessage =
+        message ||
+        this.buildNotificationMessage(
+          userName,
+          notificationType,
+          status,
+          amount,
+        );
+
+      this.loggingService.info(
+        `[${handlerName}] Sending notification to user ${userId} (Email: ${user.email}): ${finalMessage}`,
+      );
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      notificationSuccess = true;
+      this.loggingService.info(
+        `[${handlerName}] Notification supposedly sent successfully for ${transactionId} to user ${userId}.`,
+      );
+    } catch (error) {
+      notificationSuccess = false;
+      notificationError = error.message;
+      this.loggingService.error(
+        `[${handlerName}] Error sending notification for ${transactionId} to user ${userId}: ${notificationError}`,
+        {
+          ...msg.payload,
+          error: error.stack,
+        },
+      );
+    }
+
+    const event = new UserNotifiedEvent(
+      transactionId,
+      userId,
+      accountId,
+      notificationType,
+      status,
+      notificationSuccess,
+      notificationError,
+      transactionDetails?.sourceAccountId,
+      transactionDetails?.destinationAccountId,
+      destinationUserId ||
+        (accountId === transactionDetails?.destinationAccountId
+          ? userId
+          : undefined),
+      amount,
+      message,
     );
 
     try {
-      // Buscar o usuário
-      const user = await this.userRepository.findOne({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new Error(`User with ID "${userId}" not found`);
+      await this.eventBus.publish(event);
+      const executionTime = (Date.now() - startTime) / 1000;
+      if (notificationSuccess) {
+        this.loggingService.logCommandSuccess(
+          handlerName,
+          { transactionId, userId, notificationType, status },
+          executionTime,
+          { operation: 'user_notified_event_published' },
+        );
+      } else {
+        this.loggingService.warn(
+          `[${handlerName}] Failed to send notification (event published).`,
+          { transactionId, userId, error: notificationError },
+        );
       }
-
-      // Preparar a mensagem de notificação
-      const notificationMessage = this.buildNotificationMessage(
-        user.name,
-        type,
-        status,
-        amount,
-      );
-
-      // Para este exemplo, apenas logamos a notificação
-      this.loggingService.info(
-        `[NotifyUserHandler] Would send notification: ${notificationMessage}`,
-      );
-
-      // Em um sistema real, aqui enviaríamos um email, SMS, push notification, etc.
-      // Para este exemplo, apenas publicamos em um tópico RabbitMQ e registramos nos logs
-
-      this.loggingService.info(
-        `[NotifyUserHandler] Notification sent to user ${userId}: ${notificationMessage}`,
-      );
-
-      // Publicar evento indicando que a notificação foi enviada com sucesso
-      this.eventBus.publish(
-        new UserNotifiedEvent(
-          userId,
-          transactionId,
-          accountId,
-          amount,
-          type,
-          true,
-        ),
-      );
-    } catch (error) {
+    } catch (publishError) {
       this.loggingService.error(
-        `[NotifyUserHandler] Error notifying user: ${error.message}`,
+        `[${handlerName}] CRITICAL: Failed to publish UserNotifiedEvent for ${transactionId}: ${publishError.message}`,
+        { transactionId, error: publishError.stack },
       );
-
-      // Publicar evento indicando falha no envio da notificação
-      this.eventBus.publish(
-        new UserNotifiedEvent(
-          userId,
-          transactionId,
-          accountId,
-          amount,
-          type,
-          false,
-        ),
-      );
-
-      // Neste caso, não relançamos o erro, pois a notificação é considerada não crítica
-      // Uma falha aqui não deve impedir o fluxo principal da transação
     }
+    this.loggingService.info(
+      `[${handlerName}] Finished processing message for ${transactionId}/${userId}.`,
+    );
   }
 
   private buildNotificationMessage(
@@ -106,9 +199,9 @@ export class NotifyUserHandler implements ICommandHandler<NotifyUserCommand> {
         2,
       )} foi realizado com sucesso em sua conta.`;
     } else {
-      return `Olá, ${userName}. Um depósito de R$ ${amount.toFixed(
+      return `Olá, ${userName}. Uma operação de R$ ${amount.toFixed(
         2,
-      )} foi realizado com sucesso em sua conta.`;
+      )} foi realizada com sucesso em sua conta.`;
     }
   }
 }

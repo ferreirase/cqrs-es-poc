@@ -1,23 +1,33 @@
-import {
-  CommandBus,
-  CommandHandler,
-  EventBus,
-  ICommandHandler,
-} from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { v4 as uuidv4 } from 'uuid';
 import { EventStoreService } from '../../../common/events/event-store.service';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { TransactionAggregate } from '../../aggregates/transaction.aggregate';
-import { CheckAccountBalanceCommand } from '../../commands/impl/check-account-balance.command';
-import { WithdrawalCommand } from '../../commands/impl/withdrawal.command';
 import { TransactionType } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 import { TransactionContextService } from '../../services/transaction-context.service';
 
-@CommandHandler(WithdrawalCommand)
-export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
+// Define the expected message structure
+interface WithdrawalMessage {
+  commandName: 'WithdrawalCommand';
+  payload: {
+    sourceAccountId: string;
+    destinationAccountId: string;
+    amount: number;
+    description: string;
+  };
+  // Add correlationId, etc., if needed
+}
+
+@Injectable()
+// @CommandHandler(WithdrawalCommand)
+export class WithdrawalHandler /* implements ICommandHandler<WithdrawalCommand> */ {
   constructor(
-    private commandBus: CommandBus,
+    // private commandBus: CommandBus,
+    private rabbitMQService: RabbitMQService,
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private eventStoreService: EventStoreService,
@@ -25,6 +35,92 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
     private transactionContextService: TransactionContextService,
   ) {}
 
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange',
+    routingKey: 'commands.withdrawal',
+    queue: 'withdrawal_commands_queue',
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleWithdrawalCommand(msg: WithdrawalMessage): Promise<void> {
+    const handlerName = 'WithdrawalHandler';
+    const startTime = Date.now();
+
+    try {
+      const { sourceAccountId, destinationAccountId, amount, description } =
+        msg.payload;
+
+      const transactionId = uuidv4();
+
+      this.loggingService.logHandlerStart(handlerName, {
+        transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        description,
+      });
+
+      const transactionAggregate = new TransactionAggregate();
+
+      transactionAggregate.createTransaction(
+        transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        TransactionType.WITHDRAWAL,
+        description,
+      );
+
+      await this.transactionAggregateRepository.save(transactionAggregate);
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      await this.transactionContextService.setInitialContext(
+        transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        TransactionType.WITHDRAWAL,
+        description,
+      );
+
+      const checkBalancePayload = {
+        commandName: 'CheckAccountBalanceCommand',
+        payload: {
+          transactionId,
+          accountId: sourceAccountId,
+          amount,
+        },
+      };
+
+      await this.rabbitMQService.publishToExchange(
+        'commands.check_balance',
+        checkBalancePayload,
+      );
+
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.loggingService.logCommandSuccess(
+        handlerName,
+        { transactionId, sourceAccountId, amount },
+        executionTime,
+        { operation: 'published_check_balance' },
+      );
+
+      return;
+    } catch (error) {
+      const executionTime = (Date.now() - startTime) / 1000;
+      this.loggingService.logCommandError(handlerName, error, {
+        payload: msg.payload,
+      });
+      // Consider implementing retry/dead-letter queue logic here
+      // For now, just rethrow
+      throw error;
+    }
+  }
+
+  // Removed original execute method
+  /*
   async execute(command: WithdrawalCommand): Promise<void> {
     try {
       const { id, sourceAccountId, destinationAccountId, amount, description } =
@@ -85,4 +181,5 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
       throw error;
     }
   }
+  */
 }

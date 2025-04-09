@@ -1,115 +1,207 @@
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventBus } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
+import { InjectRepository } from '@nestjs/typeorm';
 import { Model } from 'mongoose';
+import { Repository } from 'typeorm';
 import { AccountDocument } from '../../../accounts/models/account.schema';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { UpdateAccountStatementCommand } from '../../commands/impl/update-account-statement.command';
+import { UserDocument } from '../../../users/models/user.schema';
+import { StatementUpdatedEvent } from '../../events/impl/statement-updated.event';
+import { TransactionEntity } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-@CommandHandler(UpdateAccountStatementCommand)
-export class UpdateAccountStatementHandler
-  implements ICommandHandler<UpdateAccountStatementCommand>
-{
+interface UpdateStatementMessage {
+  commandName: 'UpdateAccountStatementCommand';
+  payload: {
+    transactionId: string;
+    accountId: string;
+    amount: number;
+    description: string | null;
+    transactionTimestamp: Date;
+    isSource: boolean;
+  };
+}
+
+@Injectable()
+export class UpdateAccountStatementHandler {
   constructor(
     @InjectModel(AccountDocument.name)
     private accountModel: Model<AccountDocument>,
+    @InjectModel(UserDocument.name)
+    private userModel: Model<UserDocument>,
+    @InjectRepository(TransactionEntity)
+    private transactionEntityRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  async execute(command: UpdateAccountStatementCommand): Promise<void> {
-    const { transactionId, accountId, amount, type, description } = command;
+  @RabbitSubscribe({
+    exchange: 'paymaker-exchange',
+    routingKey: 'commands.update_statement',
+    queue: 'update_statement_commands_queue',
+    queueOptions: {
+      durable: true,
+    },
+  })
+  async handleUpdateStatementCommand(
+    msg: UpdateStatementMessage,
+  ): Promise<void> {
+    const handlerName = 'UpdateAccountStatementHandler';
+    const startTime = Date.now();
 
-    this.loggingService.info(
-      `[UpdateAccountStatementHandler] Updating account statement: ${accountId}, type: ${type}, amount: ${amount}`,
-    );
+    const {
+      transactionId,
+      accountId,
+      amount,
+      description,
+      transactionTimestamp,
+      isSource,
+    } = msg.payload;
+    const type = amount < 0 ? 'DEBIT' : 'CREDIT';
+
+    this.loggingService.logHandlerStart(handlerName, { ...msg.payload, type });
+
+    let success = false;
+    let errorMsg: string | undefined = undefined;
+    let transactionDetails: TransactionEntity | null = null;
+    let sourceUserId: string | undefined = undefined;
+    let destinationUserId: string | undefined = undefined;
 
     try {
-      // Buscar a conta no read model (MongoDB)
-      const account = await this.accountModel.findOne({ id: accountId });
+      transactionDetails = await this.transactionEntityRepository.findOne({
+        where: { id: transactionId },
+      });
 
-      if (!account) {
-        throw new Error(
-          `Account with ID "${accountId}" not found in read model`,
+      if (!transactionDetails) {
+        this.loggingService.warn(
+          `[${handlerName}] Transaction details not found for ${transactionId} while updating statement for account ${accountId}. Event enrichment might be incomplete.`,
         );
       }
 
-      // Criar uma entrada no extrato (array de statements dentro do documento da conta)
-      // Nota: O modelo precisa ter um campo statements para armazenar o histórico
+      if (transactionDetails) {
+        try {
+          if (transactionDetails.sourceAccountId) {
+            const sourceAcc = await this.accountModel.findOne({
+              id: transactionDetails.sourceAccountId,
+            });
+            if (sourceAcc?.owner) sourceUserId = sourceAcc.owner;
+          }
+          if (transactionDetails.destinationAccountId) {
+            const destAcc = await this.accountModel.findOne({
+              id: transactionDetails.destinationAccountId,
+            });
+            if (destAcc?.owner) destinationUserId = destAcc.owner;
+          }
+        } catch (userFetchError) {
+          this.loggingService.warn(
+            `[${handlerName}] Error fetching user IDs for ${transactionId}: ${userFetchError.message}`,
+          );
+        }
+      }
+
+      const account = await this.accountModel.findOne({ id: accountId });
+
+      if (!account) {
+        throw new NotFoundException(
+          `Account with ID "${accountId}" not found in read model (AccountDocument)`,
+        );
+      }
+
       const statementEntry = {
         transactionId,
         amount,
         type,
-        description,
-        timestamp: new Date(),
+        description: description || (type === 'DEBIT' ? 'Debit' : 'Credit'),
+        balanceAfter: account.balance + amount,
+        timestamp: transactionTimestamp || new Date(),
       };
 
-      // Adicionar ao array de statements (assumindo que o schema tenha este campo)
-      // Se a estrutura for diferente, ajuste conforme necessário
       await this.accountModel.updateOne(
         { id: accountId },
         {
-          $push: { statements: statementEntry },
-          $set: { updatedAt: new Date() },
+          $push: {
+            statements: {
+              $each: [statementEntry],
+              $sort: { timestamp: -1 },
+            },
+          },
+          $set: {
+            balance: statementEntry.balanceAfter,
+            updatedAt: new Date(),
+          },
         },
       );
 
-      // Carregar o agregado de transação
-      const transactionAggregate =
-        await this.transactionAggregateRepository.findById(transactionId);
-
-      if (!transactionAggregate) {
-        throw new Error(
-          `Transaction aggregate with ID "${transactionId}" not found`,
-        );
-      }
-
-      // Atualizar o status da transação no agregado (via evento)
-      transactionAggregate.updateStatement(
-        transactionId,
-        accountId,
-        amount,
-        type,
-        true,
-      );
-
-      // Aplicar e publicar os eventos
-      await this.transactionAggregateRepository.save(transactionAggregate);
-
+      success = true;
       this.loggingService.info(
-        `[UpdateAccountStatementHandler] Successfully updated statement for account ${accountId}`,
+        `[${handlerName}] Successfully updated statement for account ${accountId}`,
       );
     } catch (error) {
+      success = false;
+      errorMsg = error.message;
       this.loggingService.error(
-        `[UpdateAccountStatementHandler] Error updating account statement: ${error.message}`,
+        `[${handlerName}] Error updating account statement: ${errorMsg}`,
+        {
+          transactionId,
+          accountId,
+          amount,
+          error: error.stack,
+          payload: msg.payload,
+        },
       );
+    }
 
-      // Tentar carregar o agregado de transação
-      try {
-        const transactionAggregate =
-          await this.transactionAggregateRepository.findById(transactionId);
+    const event = new StatementUpdatedEvent(
+      transactionId,
+      accountId,
+      amount,
+      type,
+      success,
+      errorMsg,
+      transactionDetails?.sourceAccountId,
+      transactionDetails?.destinationAccountId,
+      sourceUserId,
+      destinationUserId,
+      transactionDetails?.amount,
+      transactionDetails?.description,
+      isSource,
+    );
 
-        if (transactionAggregate) {
-          // Atualizar o status da transação no agregado (via evento de falha)
-          transactionAggregate.updateStatement(
-            transactionId,
-            accountId,
-            amount,
-            type,
-            false,
-          );
-
-          // Aplicar e publicar os eventos
-          await this.transactionAggregateRepository.save(transactionAggregate);
-        }
-      } catch (aggError) {
-        this.loggingService.error(
-          `[UpdateAccountStatementHandler] Error updating transaction aggregate: ${aggError.message}`,
+    try {
+      await this.eventBus.publish(event);
+      const executionTime = (Date.now() - startTime) / 1000;
+      if (success) {
+        this.loggingService.logCommandSuccess(
+          handlerName,
+          { transactionId, accountId, amount, type },
+          executionTime,
+          { operation: 'statement_updated_event_published' },
+        );
+      } else {
+        this.loggingService.logCommandError(
+          handlerName,
+          new Error(errorMsg || 'Statement update failed'),
+          { transactionId, accountId, amount, type },
         );
       }
-
-      throw error;
+    } catch (publishError) {
+      this.loggingService.error(
+        `[${handlerName}] CRITICAL: Failed to publish StatementUpdatedEvent for ${transactionId}: ${publishError.message}`,
+        { transactionId, error: publishError.stack },
+      );
+      if (!success) throw new Error(errorMsg);
+      else throw publishError;
     }
+
+    if (!success) {
+      throw new Error(errorMsg);
+    }
+
+    this.loggingService.info(
+      `[${handlerName}] Finished processing message for ${transactionId}/${accountId}.`,
+    );
   }
 }

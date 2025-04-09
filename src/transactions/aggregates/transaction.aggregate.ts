@@ -176,9 +176,11 @@ export class TransactionAggregate extends AggregateRoot {
   confirmTransaction(
     transactionId: string,
     sourceAccountId: string,
-    destinationAccountId: string,
+    destinationAccountId: string | null,
     amount: number,
+    description: string | null,
     success: boolean,
+    error?: string,
   ) {
     // Validações
     if (this._id !== transactionId) {
@@ -193,17 +195,20 @@ export class TransactionAggregate extends AggregateRoot {
       );
     }
 
+    // Confirmation should happen after processing
     if (this._status !== TransactionStatus.PROCESSED) {
       throw new Error(`Cannot confirm transaction in status ${this._status}`);
     }
 
-    // Criando o evento
+    // Criando o evento com todos os dados
     const event = new TransactionConfirmedEvent(
       transactionId,
       sourceAccountId,
       destinationAccountId,
       amount,
+      description,
       success,
+      error,
     );
 
     // Aplicando o evento ao agregado
@@ -292,6 +297,8 @@ export class TransactionAggregate extends AggregateRoot {
     accountId: string,
     amount: number,
     success: boolean,
+    reason?: string,
+    error?: string,
   ) {
     // Validações
     if (this._id !== transactionId) {
@@ -306,8 +313,20 @@ export class TransactionAggregate extends AggregateRoot {
       );
     }
 
+    // Should not release if already confirmed
     if (this._status === TransactionStatus.CONFIRMED) {
       throw new Error(`Cannot release balance for confirmed transaction`);
+    }
+    // Also check if already completed or cancelled?
+    if (
+      this._status === TransactionStatus.COMPLETED ||
+      this._status === TransactionStatus.CANCELED ||
+      this._status === TransactionStatus.FAILED
+    ) {
+      console.warn(
+        `[TransactionAggregate] Attempting to release balance for already finalized transaction ${transactionId} in status ${this._status}. Ignoring.`,
+      );
+      return; // Avoid emitting event again if already finalized
     }
 
     // Criando o evento
@@ -316,6 +335,8 @@ export class TransactionAggregate extends AggregateRoot {
       accountId,
       amount,
       success,
+      reason,
+      error,
     );
 
     // Aplicando o evento ao agregado
@@ -375,22 +396,24 @@ export class TransactionAggregate extends AggregateRoot {
 
   // Quando uma transação é confirmada
   onTransactionConfirmedEvent(event: TransactionConfirmedEvent) {
-    if (event.success) {
-      this._status = TransactionStatus.CONFIRMED;
-    } else {
-      this._status = TransactionStatus.FAILED;
-      this._error = 'Failed to confirm transaction';
-    }
+    this._status = event.success
+      ? TransactionStatus.CONFIRMED
+      : TransactionStatus.FAILED;
+    this._error = event.error; // Store error message if confirmation failed
     this._updatedAt = new Date();
+    // Note: We don't update source/destination/amount/description here as they were set at creation
+    // The event carries them for downstream consumers (like the saga).
   }
 
-  // Quando um saldo é liberado
+  // Quando o saldo reservado é liberado (compensação)
   onBalanceReleasedEvent(event: BalanceReleasedEvent) {
-    if (event.success) {
-      this._status = TransactionStatus.CANCELED;
-    } else {
-      this._error = 'Failed to release balance';
-    }
+    // Release typically means the transaction failed after reservation.
+    // We mark as FAILED unless the release itself failed critically.
+    this._status = event.success
+      ? TransactionStatus.FAILED // Compensation succeeded, TX failed
+      : TransactionStatus.FAILED; // Compensation failed, TX also failed (maybe needs specific state?)
+    this._error =
+      event.error || event.reason || 'Balance released due to failure'; // Record reason/error
     this._updatedAt = new Date();
   }
 
