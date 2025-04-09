@@ -19,6 +19,13 @@ import { RabbitMQService } from './rabbitmq.service';
         uri: getRabbitMQUrl(configService),
         connectionInitOptions: { wait: true },
         defaultRpcTimeout: 10000,
+        prefetchCount: 1,
+        channels: {
+          default: {
+            prefetchCount: 1,
+            default: true,
+          },
+        },
       }),
     }),
   ],

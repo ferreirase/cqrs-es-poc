@@ -1,14 +1,61 @@
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
-import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConsumeMessage } from 'amqplib';
 
 @Injectable()
-export class RabbitMQService {
+export class RabbitMQService implements OnModuleInit {
   private readonly logger = new Logger(RabbitMQService.name);
 
   constructor(
     @Inject(AmqpConnection) private readonly amqpConnection: AmqpConnection,
   ) {}
+
+  /**
+   * Configura o prefetch count globalmente quando o módulo iniciar
+   */
+  async onModuleInit() {
+    try {
+      // Definir prefetch count para 1 no nível do canal
+      // Isso limita cada consumidor a pegar apenas 1 mensagem por vez
+      await this.setPrefetchCount(1);
+    } catch (error) {
+      this.logger.error('Failed to set RabbitMQ prefetch count', error.message);
+    }
+  }
+
+  /**
+   * Set the prefetch count for the current channel
+   * @param count Number of messages to prefetch at once
+   * @param isGlobal Whether the setting applies per consumer (false) or globally (true)
+   */
+  async setPrefetchCount(
+    count: number,
+    isGlobal: boolean = false,
+  ): Promise<void> {
+    try {
+      await this.amqpConnection.channel.prefetch(count, isGlobal);
+      this.logger.log(
+        `RabbitMQ prefetch count set to ${count} (${
+          isGlobal ? 'global' : 'per consumer'
+        })`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to set RabbitMQ prefetch count to ${count}:`,
+        error.message,
+      );
+      throw new HttpException(
+        `Failed to set RabbitMQ prefetch count: ${error.message}`,
+        500,
+      );
+    }
+  }
 
   /**
    * Publish a message to a specific queue using the configured exchange
@@ -106,13 +153,21 @@ export class RabbitMQService {
    * Subscribe to a queue and process messages
    * @param queue The queue name
    * @param handler The function to process messages
+   * @param prefetchCount Number of messages to prefetch (default: 1)
    */
   async subscribe<T>(
     queue: string,
     handler: (message: T, originalMessage: ConsumeMessage) => Promise<void>,
+    prefetchCount: number = 1,
   ): Promise<void> {
     try {
       await this.amqpConnection.channel.assertQueue(queue, { durable: true });
+
+      // Aplicar prefetch count específico para esta fila se especificado
+      await this.setPrefetchCount(prefetchCount);
+      this.logger.debug(
+        `Set prefetch count to ${prefetchCount} for queue: ${queue}`,
+      );
 
       await this.amqpConnection.channel.consume(
         queue,

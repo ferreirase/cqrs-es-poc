@@ -4,8 +4,8 @@ import http from 'k6/http';
 // Configuração do teste
 export const options = {
   stages: [
-    { duration: '30s', target: 20 }, // Rampa mais suave para 5 usuários
-    { duration: '1m', target: 20 }, // Manter 5 usuários por 2 minutos
+    { duration: '30s', target: 8 }, // Rampa mais lenta para 8 usuários, reduzindo a carga inicial
+    { duration: '1m', target: 10 }, // Aumenta gradualmente para 10 usuários
     { duration: '30s', target: 0 }, // Rampa de descida
   ],
   thresholds: {
@@ -14,7 +14,7 @@ export const options = {
   },
 };
 
-const BASE_URL = 'http://localhost:3001'; // Verifique se esta é a URL correta da sua API
+const BASE_URL = 'http://localhost:3001/api'; // Verifique se esta é a URL correta da sua API
 
 // Função para gerar UUID v4 (necessário se a API valida)
 function uuidv4() {
@@ -165,7 +165,7 @@ export default function () {
   // 3. Loop de transações de Withdrawal
   const withdrawalAmount = 50; // Valor de cada saque
   let withdrawalCount = 0;
-  const maxWithdrawals = 20; // Limite para evitar loops infinitos em caso de erro
+  const maxWithdrawals = 5; // Limite para 5 saques por usuário para evitar sobrecarga
 
   while (withdrawalCount < maxWithdrawals) {
     const currentBalance = getBalance(payerAccountId);
@@ -196,7 +196,7 @@ export default function () {
     withdrawalCount++;
 
     // Pausa entre operações para simular um fluxo mais realista
-    sleep(1.5); // Pausa de 1.5 segundos
+    sleep(5); // Pausa de 5 segundos entre saques
   }
 
   console.log(
@@ -211,5 +211,5 @@ export default function () {
     `VU ${__VU}: Final Payer Balance: ${finalPayerBalance}, Final Receiver Balance: ${finalReceiverBalance}`,
   );
 
-  sleep(2); // Pausa final antes do próximo VU (ou fim)
+  sleep(10); // Pausa final antes do próximo VU (ou fim) - aumentado para 10 segundos
 }

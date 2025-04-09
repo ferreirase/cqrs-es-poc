@@ -2,7 +2,6 @@ import { Module, OnModuleInit } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
-
 import { AccountsModule } from '../accounts/accounts.module';
 import { AccountEntity } from '../accounts/models/account.entity';
 import { AccountSchema } from '../accounts/models/account.schema';
@@ -12,12 +11,12 @@ import { EventEntity } from '../common/events/event.entity';
 import { RabbitMQModule } from '../common/messaging/rabbitmq.module';
 import { RabbitMQService } from '../common/messaging/rabbitmq.service';
 import { MonitoringModule } from '../common/monitoring/monitoring.module';
-import { TransactionContextService } from '../transactions/services/transaction-context.service';
+import { RabbitMQWorkerService } from '../common/workers';
 import { UserEntity } from '../users/models/user.entity';
 import { UserSchema } from '../users/models/user.schema';
+
 import { TransactionAggregate } from './aggregates/transaction.aggregate';
 import { CreateTransactionHandler } from './commands/handlers/create-transaction.handler';
-import { ProcessTransactionHandler as ExistingProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
 import { SagaCommandHandlers } from './commands/handlers/saga-handlers.index';
 import { TransactionsController } from './controllers/transactions.controller';
 import { EventHandlers } from './events/handlers';
@@ -31,16 +30,26 @@ import { GetAllTransactionsHandler } from './queries/handlers/get-all-transactio
 import { GetTransactionHandler } from './queries/handlers/get-transaction.handler';
 import { TransactionAggregateRepository } from './repositories/transaction-aggregate.repository';
 import { WithdrawalSaga } from './sagas/withdrawal.saga';
+import { TransactionContextService } from './services/transaction-context.service';
 
-const CommandHandlers = [CreateTransactionHandler, ...SagaCommandHandlers];
-const QueryHandlers = [
+import { CheckAccountBalanceHandler } from './commands/handlers/check-account-balance.handler';
+import { ProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
+import { ReserveBalanceHandler } from './commands/handlers/reserve-balance.handler';
+import { WithdrawalHandler } from './commands/handlers/withdrawal.handler';
+
+const AllCommandHandlers = [CreateTransactionHandler, ...SagaCommandHandlers];
+
+const AllQueryHandlers = [
   GetTransactionHandler,
   GetAccountTransactionsHandler,
   GetAllTransactionsHandler,
 ];
-const Sagas = [WithdrawalSaga];
-const Aggregates = [TransactionAggregate];
-const Repositories = [TransactionAggregateRepository];
+
+const AllSagas = [WithdrawalSaga];
+
+const AllAggregates = [TransactionAggregate];
+
+const AllRepositories = [TransactionAggregateRepository];
 
 @Module({
   imports: [
@@ -65,109 +74,167 @@ const Repositories = [TransactionAggregateRepository];
     EventDeduplicationService,
     EventStoreService,
     TransactionContextService,
-    ExistingProcessTransactionHandler,
-    ...CommandHandlers,
+    RabbitMQWorkerService,
+    ...AllCommandHandlers,
     ...EventHandlers,
-    ...QueryHandlers,
-    ...Sagas,
-    ...Aggregates,
-    ...Repositories,
+    ...AllQueryHandlers,
+    ...AllSagas,
+    ...AllAggregates,
+    ...AllRepositories,
   ],
 })
 export class TransactionsModule implements OnModuleInit {
-  constructor(private readonly rabbitMQService: RabbitMQService) {}
+  constructor(
+    private readonly rabbitMQService: RabbitMQService,
+    private readonly rabbitMQWorkerService: RabbitMQWorkerService,
+    private readonly withdrawalHandlerInstance: WithdrawalHandler,
+    private readonly checkAccountBalanceHandlerInstance: CheckAccountBalanceHandler,
+    private readonly reserveBalanceHandlerInstance: ReserveBalanceHandler,
+    private readonly processTransactionHandlerInstance: ProcessTransactionHandler,
+  ) {}
 
   private readonly exchangeName = 'paymaker-exchange';
 
   async onModuleInit() {
-    // Criar e vincular todas as filas necessárias para o fluxo de transações
     try {
-      // Fila de comandos de saque
+      try {
+        await this.rabbitMQService.setPrefetchCount(1);
+        console.log(
+          '✅ RabbitMQ prefetch count configurado para 1 em todos os consumidores',
+        );
+      } catch (error) {
+        console.error('❌ Erro ao configurar RabbitMQ prefetch count:', error);
+      }
+
       await this.rabbitMQService.createQueueAndBind(
         'withdrawal_commands_queue',
         'commands.withdrawal',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de verificação de saldo
       await this.rabbitMQService.createQueueAndBind(
         'check_balance_commands_queue',
         'commands.check_balance',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de reserva de saldo
       await this.rabbitMQService.createQueueAndBind(
         'reserve_balance_commands_queue',
         'commands.reserve_balance',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de processamento de transação
       await this.rabbitMQService.createQueueAndBind(
         'process_transaction_commands_queue',
         'commands.process_transaction',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de confirmação de transação
       await this.rabbitMQService.createQueueAndBind(
         'confirm_transaction_commands_queue',
         'commands.confirm_transaction',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de atualização de extrato
       await this.rabbitMQService.createQueueAndBind(
         'update_statement_commands_queue',
         'commands.update_statement',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de notificação de usuário
       await this.rabbitMQService.createQueueAndBind(
         'notify_user_commands_queue',
         'commands.notify_user',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
-
-      // Fila de liberação de saldo (compensação)
       await this.rabbitMQService.createQueueAndBind(
         'release_balance_commands_queue',
         'commands.release_balance',
-        {
-          durable: true,
-          exchangeName: this.exchangeName,
-        },
+        { durable: true, exchangeName: this.exchangeName },
       );
 
       console.log(
         '✅ Todas as filas RabbitMQ foram criadas e vinculadas com sucesso!',
       );
+
+      await this.setupThreadedConsumers();
     } catch (error) {
       console.error('❌ Erro ao inicializar filas RabbitMQ:', error);
       throw error;
+    }
+  }
+
+  private async setupThreadedConsumers() {
+    try {
+      if (
+        this.withdrawalHandlerInstance &&
+        this.withdrawalHandlerInstance.execute
+      ) {
+        console.log('🧵 Configurando worker para withdrawal_commands_queue');
+        await this.rabbitMQWorkerService.registerQueueWorker(
+          'withdrawal_commands_queue',
+          this.withdrawalHandlerInstance.execute.bind(
+            this.withdrawalHandlerInstance,
+          ),
+        );
+      } else {
+        console.warn(
+          'Instância ou método execute de WithdrawalHandler não disponível para worker.',
+        );
+      }
+
+      if (
+        this.checkAccountBalanceHandlerInstance &&
+        this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand
+      ) {
+        console.log('🧵 Configurando worker para check_balance_commands_queue');
+        await this.rabbitMQWorkerService.registerQueueWorker(
+          'check_balance_commands_queue',
+          this.checkAccountBalanceHandlerInstance.handleCheckBalanceCommand.bind(
+            this.checkAccountBalanceHandlerInstance,
+          ),
+        );
+      } else {
+        console.warn(
+          'Instância ou método handleCheckBalanceCommand de CheckAccountBalanceHandler não disponível para worker.',
+        );
+      }
+
+      if (
+        this.reserveBalanceHandlerInstance &&
+        this.reserveBalanceHandlerInstance.handleReserveBalanceCommand
+      ) {
+        console.log(
+          '🧵 Configurando worker para reserve_balance_commands_queue',
+        );
+        await this.rabbitMQWorkerService.registerQueueWorker(
+          'reserve_balance_commands_queue',
+          this.reserveBalanceHandlerInstance.handleReserveBalanceCommand.bind(
+            this.reserveBalanceHandlerInstance,
+          ),
+        );
+      } else {
+        console.warn(
+          'Instância ou método handleReserveBalanceCommand de ReserveBalanceHandler não disponível para worker.',
+        );
+      }
+
+      if (
+        this.processTransactionHandlerInstance &&
+        this.processTransactionHandlerInstance.handleProcessTransactionCommand
+      ) {
+        console.log(
+          '🧵 Configurando worker para process_transaction_commands_queue',
+        );
+        await this.rabbitMQWorkerService.registerQueueWorker(
+          'process_transaction_commands_queue',
+          this.processTransactionHandlerInstance.handleProcessTransactionCommand.bind(
+            this.processTransactionHandlerInstance,
+          ),
+        );
+      } else {
+        console.warn(
+          'Instância ou método handleProcessTransactionCommand de ProcessTransactionHandler não disponível para worker.',
+        );
+      }
+
+      console.log('✅ Processamento multi-thread configurado com sucesso!');
+    } catch (error) {
+      console.error('❌ Erro ao configurar processamento multi-thread:', error);
     }
   }
 }

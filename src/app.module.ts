@@ -10,6 +10,8 @@ import { EventEntity } from './common/events/event.entity';
 import { EventsModule } from './common/events/events.module';
 import { RabbitMQService } from './common/messaging/rabbitmq.service';
 import { MonitoringModule } from './common/monitoring/monitoring.module';
+import { WorkerModule } from './common/workers/worker.module';
+import { WorkersModule } from './common/workers/workers.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { UsersModule } from './users/users.module';
 import {
@@ -25,6 +27,8 @@ import {
 
 @Module({
   imports: [
+    WorkersModule,
+    WorkerModule.forRoot(),
     RabbitMQModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

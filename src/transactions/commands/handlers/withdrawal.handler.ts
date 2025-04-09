@@ -1,182 +1,119 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Injectable } from '@nestjs/common';
-import { EventBus } from '@nestjs/cqrs';
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { v4 as uuidv4 } from 'uuid';
-import { EventStoreService } from '../../../common/events/event-store.service';
 import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { TransactionAggregate } from '../../aggregates/transaction.aggregate';
+import { WorkerMessageProcessor } from '../../../common/workers/worker-message-processor';
 import { TransactionType } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 import { TransactionContextService } from '../../services/transaction-context.service';
+import { WithdrawalCommand } from '../impl/withdrawal.command';
 
-// Define the expected message structure
-interface WithdrawalMessage {
-  commandName: 'WithdrawalCommand';
-  payload: {
-    transactionId: string;
-    sourceAccountId: string;
-    destinationAccountId: string;
-    amount: number;
-    description: string;
-  };
-}
-
-@Injectable()
-// @CommandHandler(WithdrawalCommand)
-export class WithdrawalHandler /* implements ICommandHandler<WithdrawalCommand> */ {
+@CommandHandler(WithdrawalCommand)
+export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
   constructor(
-    // private commandBus: CommandBus,
-    private rabbitMQService: RabbitMQService,
-    private eventBus: EventBus,
-    private loggingService: LoggingService,
-    private eventStoreService: EventStoreService,
-    private transactionAggregateRepository: TransactionAggregateRepository,
-    private transactionContextService: TransactionContextService,
+    private readonly rabbitmqService: RabbitMQService,
+    private readonly loggingService: LoggingService,
+    private readonly workerProcessor: WorkerMessageProcessor,
+    private readonly transactionAggregateRepository: TransactionAggregateRepository,
+    private readonly transactionContextService: TransactionContextService,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange',
-    routingKey: 'commands.withdrawal',
-    queue: 'withdrawal_commands_queue',
-    queueOptions: {
-      durable: true,
-    },
-  })
-  async handleWithdrawalCommand(msg: any): Promise<void> {
+  async execute(command: WithdrawalCommand): Promise<any> {
     const handlerName = 'WithdrawalHandler';
     const startTime = Date.now();
-
-    const queueMessage = JSON.parse(
-      msg as unknown as string,
-    ) as WithdrawalMessage;
-
-    // Validação robusta da mensagem recebida
-    if (!queueMessage || typeof queueMessage !== 'object') {
-      this.loggingService.error(
-        `[${handlerName}] Received invalid message format: ${typeof queueMessage}`,
-        { receivedMessage: JSON.stringify(queueMessage) },
-      );
-      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
-      return;
-    }
-
-    // Log da mensagem recebida para debug
-    this.loggingService.info(`[${handlerName}] Received message from queue:`, {
-      receivedMessage: JSON.stringify(queueMessage),
-    });
-
-    // Validar a estrutura da mensagem
-    if (!queueMessage.payload || typeof queueMessage.payload !== 'object') {
-      this.loggingService.error(
-        `[${handlerName}] Missing or invalid payload in message`,
-        { receivedMessage: JSON.stringify(queueMessage) },
-      );
-      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
-      return;
-    }
-
-    // Validar campos obrigatórios
-    const { sourceAccountId, destinationAccountId, amount, description } =
-      queueMessage.payload;
-
-    if (!sourceAccountId || !amount) {
-      this.loggingService.error(
-        `[${handlerName}] Missing required fields in payload`,
-        {
-          receivedPayload: JSON.stringify(queueMessage.payload),
-          sourceAccountId: sourceAccountId || 'MISSING',
-          amount: amount || 'MISSING',
-        },
-      );
-      // Não relance o erro - isso apenas reenviaria a mensagem para a fila em loop
-      return;
-    }
+    const transactionId = command.id || uuidv4();
 
     try {
-      // Se já existe um ID na mensagem (reprocessamento), verificar se a transação já existe
-      if (queueMessage.payload.transactionId) {
-        const existingTransaction =
-          await this.transactionAggregateRepository.findOneByTransactionId(
-            queueMessage.payload.transactionId,
-          );
-
-        if (existingTransaction) {
-          this.loggingService.info(
-            `[${handlerName}] Transaction ${queueMessage.payload.transactionId} already exists, skipping processing`,
-            { transactionId: queueMessage.payload.transactionId },
-          );
-          return; // Evita reprocessamento
-        }
-      }
-
-      const transactionId = queueMessage.payload.transactionId || uuidv4();
-
       this.loggingService.logHandlerStart(handlerName, {
+        command,
         transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        description,
       });
 
-      const transactionAggregate = new TransactionAggregate();
+      const processingTask = {
+        operation: 'createTransaction',
+        data: {
+          transactionId: transactionId,
+          sourceAccountId: command.sourceAccountId,
+          destinationAccountId: command.destinationAccountId,
+          amount: command.amount,
+          type: TransactionType.WITHDRAWAL,
+          description: command.description,
+        },
+      };
 
-      transactionAggregate.createTransaction(
+      this.loggingService.info(`[${handlerName}] Enviando tarefa para worker`, {
         transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
-        TransactionType.WITHDRAWAL,
-        description,
+        operation: processingTask.operation,
+      });
+
+      const processingResult = await this.workerProcessor.processMessage<any>(
+        processingTask,
       );
 
-      await this.transactionAggregateRepository.save(transactionAggregate);
+      if (!processingResult || !processingResult.processed) {
+        this.loggingService.error(
+          `[${handlerName}] Worker falhou ao processar a transação`,
+          { transactionId, processingResult },
+        );
+        throw new Error(
+          `Worker failed to process transaction ${transactionId}`,
+        );
+      }
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+      this.loggingService.info(
+        `[${handlerName}] Processamento de worker concluído`,
+        { transactionId, resultStatus: processingResult.status },
+      );
 
       await this.transactionContextService.setInitialContext(
         transactionId,
-        sourceAccountId,
-        destinationAccountId,
-        amount,
+        command.sourceAccountId,
+        command.destinationAccountId,
+        command.amount,
         TransactionType.WITHDRAWAL,
-        description,
+        command.description,
+      );
+
+      this.loggingService.info(
+        `[${handlerName}] Contexto inicial definido para ${transactionId}`,
       );
 
       const checkBalancePayload = {
         commandName: 'CheckAccountBalanceCommand',
         payload: {
-          transactionId,
-          accountId: sourceAccountId,
-          amount,
+          transactionId: transactionId,
+          accountId: command.sourceAccountId,
+          amount: command.amount,
         },
       };
 
-      await this.rabbitMQService.publishToExchange(
+      await this.rabbitmqService.publishToExchange(
         'commands.check_balance',
         checkBalancePayload,
+        { exchangeName: 'paymaker-exchange' },
+      );
+
+      this.loggingService.info(
+        `[${handlerName}] Command 'CheckAccountBalanceCommand' publicado`,
+        { transactionId: transactionId },
       );
 
       const executionTime = (Date.now() - startTime) / 1000;
-
       this.loggingService.logCommandSuccess(
         handlerName,
-        { transactionId, sourceAccountId, amount },
+        { transactionId },
         executionTime,
-        { operation: 'published_check_balance_command' },
+        { status: 'INITIATED' },
       );
 
-      return;
+      return { transactionId: transactionId, status: 'INITIATED' };
     } catch (error) {
       const executionTime = (Date.now() - startTime) / 1000;
-
       this.loggingService.logCommandError(handlerName, error, {
-        payload: queueMessage.payload,
+        command,
+        transactionId,
         executionTime,
       });
-      // Consider implementing retry/dead-letter queue logic here
-      // For now, just rethrow
       throw error;
     }
   }

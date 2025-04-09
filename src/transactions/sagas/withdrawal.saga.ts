@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Model } from 'mongoose';
 import { catchError, filter, mergeMap, Observable, of, tap } from 'rxjs';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { RabbitMQService } from '../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../common/monitoring/logging.service';
 import { UpdateTransactionStatusCommand } from '../commands/impl/update-transaction-status.command';
@@ -37,7 +37,55 @@ export class WithdrawalSaga {
     private readonly transactionRepository: Repository<TransactionEntity>,
     @InjectModel(TransactionDocument.name)
     private readonly transactionModel: Model<TransactionDocument>,
-  ) {}
+  ) {
+    // Iniciar um timer para verificar transações travadas
+    this.setupStuckTransactionsTimer();
+  }
+
+  // Cache para controlar status de transações já processados
+  private processedStatusMap = new Map<
+    string,
+    { status: TransactionStatus; timestamp: number }
+  >();
+
+  // Cache para eventos processados
+  private processedEventsCache = new Map<string, number>();
+
+  // Helper para verificar se o evento já foi processado recentemente
+  private hasProcessedEvent(eventType: string, transactionId: string): boolean {
+    const cacheKey = `${eventType}:${transactionId}`;
+    const now = Date.now();
+    const lastProcessed = this.processedEventsCache.get(cacheKey);
+
+    if (lastProcessed && now - lastProcessed < 60000) {
+      // 60 segundos
+      this.loggingService.info(
+        `[WithdrawalSaga] Event deduplication: ${eventType} for transaction ${transactionId} already processed recently`,
+        { timeSince: `${(now - lastProcessed) / 1000}s` },
+      );
+      return true;
+    }
+
+    // Marcar como processado
+    this.processedEventsCache.set(cacheKey, now);
+
+    // Limpeza do cache
+    if (this.processedEventsCache.size > 10000) {
+      const keysToDelete = [];
+      for (const [key, timestamp] of this.processedEventsCache.entries()) {
+        if (now - timestamp > 300000) {
+          // 5 minutos
+          keysToDelete.push(key);
+        }
+      }
+
+      for (const key of keysToDelete) {
+        this.processedEventsCache.delete(key);
+      }
+    }
+
+    return false;
+  }
 
   private async updateTransactionStatus(
     transactionId: string,
@@ -45,20 +93,97 @@ export class WithdrawalSaga {
     error?: string,
   ): Promise<void> {
     try {
+      // Verificar se já processamos essa mesma mudança de status nos últimos 60 segundos
+      const cacheKey = `${transactionId}:${status}`;
+      const now = Date.now();
+      const cachedStatus = this.processedStatusMap.get(cacheKey);
+
+      if (cachedStatus && now - cachedStatus.timestamp < 60000) {
+        this.loggingService.info(
+          `[WithdrawalSaga] Cache: Transaction ${transactionId} status ${status} already processed recently, skipping duplicate`,
+          { timeSinceLastUpdate: `${(now - cachedStatus.timestamp) / 1000}s` },
+        );
+        return;
+      }
+
       this.loggingService.info(
         `[WithdrawalSaga] Updating transaction status for ${transactionId}`,
         { status, error },
       );
 
+      // Verificar status atual no banco de dados
       const currentTransaction = await this.transactionRepository.findOne({
         where: { id: transactionId },
       });
 
+      // Se já está no status desejado, não faz nada
       if (currentTransaction && currentTransaction.status === status) {
         this.loggingService.info(
           `[WithdrawalSaga] Transaction ${transactionId} already has status ${status}, skipping update`,
         );
+
+        // Atualizar cache mesmo sem mudanças para evitar checagens repetidas no banco
+        this.processedStatusMap.set(cacheKey, { status, timestamp: now });
+
+        // Limpar cache periodicamente para evitar vazamento de memória
+        if (this.processedStatusMap.size > 5000) {
+          const keysToDelete = [];
+          for (const [key, value] of this.processedStatusMap.entries()) {
+            if (now - value.timestamp > 120000) {
+              // Remover entradas mais antigas que 2 minutos
+              keysToDelete.push(key);
+            }
+          }
+
+          for (const key of keysToDelete) {
+            this.processedStatusMap.delete(key);
+          }
+        }
+
         return;
+      }
+
+      // Verificar se é uma mudança de status válida
+      if (currentTransaction) {
+        // Impedir transições inválidas de estado
+        const validTransitions = {
+          [TransactionStatus.PENDING]: [
+            TransactionStatus.RESERVED,
+            TransactionStatus.FAILED,
+          ],
+          [TransactionStatus.INITIATED]: [
+            TransactionStatus.RESERVED,
+            TransactionStatus.FAILED,
+          ],
+          [TransactionStatus.RESERVED]: [
+            TransactionStatus.PROCESSED,
+            TransactionStatus.FAILED,
+          ],
+          [TransactionStatus.PROCESSED]: [
+            TransactionStatus.CONFIRMED,
+            TransactionStatus.FAILED,
+          ],
+          [TransactionStatus.CONFIRMED]: [
+            TransactionStatus.COMPLETED,
+            TransactionStatus.FAILED,
+          ],
+          // Estados finais não podem mudar
+          [TransactionStatus.COMPLETED]: [],
+          [TransactionStatus.FAILED]: [],
+          [TransactionStatus.CANCELLED]: [],
+          [TransactionStatus.CANCELED]: [],
+        };
+
+        const currentStatus = currentTransaction.status;
+        const allowedNextStates = validTransitions[currentStatus] || [];
+
+        if (!allowedNextStates.includes(status)) {
+          this.loggingService.warn(
+            `[WithdrawalSaga] Invalid state transition from ${currentStatus} to ${status} for transaction ${transactionId}. Skipping.`,
+            { currentStatus, requestedStatus: status },
+          );
+          return;
+        }
       }
 
       const processedAt =
@@ -77,6 +202,9 @@ export class WithdrawalSaga {
       );
       await this.commandBus.execute(statusCommand);
 
+      // Atualizar cache com o novo status
+      this.processedStatusMap.set(cacheKey, { status, timestamp: now });
+
       this.loggingService.info(
         `[WithdrawalSaga] Status update initiated for transaction ${transactionId}`,
         { status },
@@ -93,6 +221,13 @@ export class WithdrawalSaga {
   balanceChecked = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceCheckedEvent),
+      filter((event: BalanceCheckedEvent) => {
+        // Filtrar eventos duplicados
+        return !this.hasProcessedEvent(
+          'BalanceCheckedEvent',
+          event.transactionId,
+        );
+      }),
       mergeMap(async (event: BalanceCheckedEvent) => {
         this.loggingService.info(
           `[WithdrawalSaga] Handling BalanceCheckedEvent for ${event.transactionId}`,
@@ -142,6 +277,13 @@ export class WithdrawalSaga {
   balanceReserved = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceReservedEvent),
+      filter((event: BalanceReservedEvent) => {
+        // Filtrar eventos duplicados
+        return !this.hasProcessedEvent(
+          'BalanceReservedEvent',
+          event.transactionId,
+        );
+      }),
       mergeMap(async (event: BalanceReservedEvent) => {
         this.loggingService.info(
           `[WithdrawalSaga] Handling BalanceReservedEvent for ${event.transactionId}`,
@@ -195,6 +337,13 @@ export class WithdrawalSaga {
   transactionProcessed = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(TransactionProcessedEvent),
+      filter((event: TransactionProcessedEvent) => {
+        // Filtrar eventos duplicados
+        return !this.hasProcessedEvent(
+          'TransactionProcessedEvent',
+          event.transactionId,
+        );
+      }),
       mergeMap(async (event: TransactionProcessedEvent) => {
         this.loggingService.info(
           `[WithdrawalSaga] Handling TransactionProcessedEvent for ${event.transactionId}`,
@@ -274,6 +423,13 @@ export class WithdrawalSaga {
   transactionConfirmed = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(TransactionConfirmedEvent),
+      filter((event: TransactionConfirmedEvent) => {
+        // Filtrar eventos duplicados
+        return !this.hasProcessedEvent(
+          'TransactionConfirmedEvent',
+          event.transactionId,
+        );
+      }),
       mergeMap(async (event: TransactionConfirmedEvent) => {
         this.loggingService.info(
           `[WithdrawalSaga] Handling TransactionConfirmedEvent for ${event.transactionId}`,
@@ -334,25 +490,60 @@ export class WithdrawalSaga {
           return;
         }
 
-        const updateSourceStmtPayload = {
-          commandName: 'UpdateAccountStatementCommand',
-          payload: {
-            transactionId: event.transactionId,
-            accountId: event.sourceAccountId,
-            amount: -event.amount,
-            description: event.description || 'Withdrawal Debit',
-            transactionTimestamp: new Date(),
-            isSource: true,
-            destinationAccountId: event.destinationAccountId,
-          },
-        };
-        await this.rabbitMQService.publishToExchange(
-          'commands.update_statement',
-          updateSourceStmtPayload,
-        );
-        this.loggingService.info(
-          `[WithdrawalSaga] Published UpdateAccountStatementCommand (Source) for ${event.transactionId}`,
-        );
+        try {
+          // 1. Atualizar o extrato da conta de origem (débito)
+          const updateSourceStmtPayload = {
+            commandName: 'UpdateAccountStatementCommand',
+            payload: {
+              transactionId: event.transactionId,
+              accountId: event.sourceAccountId,
+              amount: -event.amount,
+              description: event.description || 'Withdrawal Debit',
+              transactionTimestamp: new Date(),
+              isSource: true,
+              destinationAccountId: event.destinationAccountId,
+            },
+          };
+          await this.rabbitMQService.publishToExchange(
+            'commands.update_statement',
+            updateSourceStmtPayload,
+          );
+          this.loggingService.info(
+            `[WithdrawalSaga] Published UpdateAccountStatementCommand (Source) for ${event.transactionId}`,
+          );
+
+          // 2. Se houver destinatário, atualizar também o extrato da conta de destino (crédito)
+          if (event.destinationAccountId) {
+            // Pequena pausa para garantir processamento sequencial
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            const updateDestStmtPayload = {
+              commandName: 'UpdateAccountStatementCommand',
+              payload: {
+                transactionId: event.transactionId,
+                accountId: event.destinationAccountId,
+                amount: event.amount, // Valor positivo para crédito
+                description: event.description || 'Withdrawal Credit',
+                transactionTimestamp: new Date(),
+                isSource: false,
+                sourceAccountId: event.sourceAccountId,
+              },
+            };
+            await this.rabbitMQService.publishToExchange(
+              'commands.update_statement',
+              updateDestStmtPayload,
+            );
+            this.loggingService.info(
+              `[WithdrawalSaga] Published UpdateAccountStatementCommand (Destination) for ${event.transactionId}`,
+            );
+          }
+        } catch (error) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Error publishing statement update commands: ${error.message}`,
+            { transactionId: event.transactionId, error: error.stack },
+          );
+          // Não marcar como falha, pois o timer de auto-completion vai resolver
+        }
       }),
       catchError((error, caught) => {
         this.loggingService.error(
@@ -368,7 +559,19 @@ export class WithdrawalSaga {
   sourceStatementUpdated = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(StatementUpdatedEvent),
-      filter((event: StatementUpdatedEvent) => event.isSource === true),
+      filter((event: StatementUpdatedEvent) => {
+        // Verificar se é um evento para a conta de origem
+        const isSourceAccount = event.isSource;
+
+        // Apenas processar eventos de origem e não duplicados
+        return (
+          isSourceAccount &&
+          !this.hasProcessedEvent(
+            'SourceStatementUpdatedEvent',
+            event.transactionId,
+          )
+        );
+      }),
       mergeMap(async (event: StatementUpdatedEvent) => {
         const handlerName = 'WithdrawalSaga::sourceStatementUpdated';
         this.loggingService.info(
@@ -424,55 +627,53 @@ export class WithdrawalSaga {
         // Se não há destinatário, publicar notificação para origem e completar
         if (!event.destinationAccountId) {
           this.loggingService.info(
-            `[${handlerName}] No destination account for ${event.transactionId}. Notifying source and completing.`,
+            `[${handlerName}] No destination account for ${event.transactionId}. Marking as COMPLETED directly.`,
           );
 
-          if (!event.sourceUserId) {
-            this.loggingService.error(
-              `[${handlerName}] Missing sourceUserId in StatementUpdatedEvent for final notification of ${event.transactionId}. Cannot notify.`,
-            );
-            await this.updateTransactionStatus(
-              event.transactionId,
-              TransactionStatus.COMPLETED, // Marcar como completo mesmo sem notificação
-              'Completed without source user ID for notification',
-            );
-            return;
-          }
-          if (!event.amount) {
-            this.loggingService.error(
-              `[${handlerName}] Missing amount in StatementUpdatedEvent needed for source notification for ${event.transactionId}. Cannot notify.`,
-            );
-            await this.updateTransactionStatus(
-              event.transactionId,
-              TransactionStatus.COMPLETED, // Marcar como completo mesmo sem notificação
-              'Completed without amount for source notification',
-            );
-            return;
-          }
+          // Marcar a transação como COMPLETED primeiro, antes de tentar notificar
+          await this.updateTransactionStatus(
+            event.transactionId,
+            TransactionStatus.COMPLETED,
+            'Completed transaction with no destination',
+          );
 
-          const notifySourcePayload = {
-            commandName: 'NotifyUserCommand',
-            payload: {
-              transactionId: event.transactionId,
-              userId: event.sourceUserId,
-              accountId: event.accountId, // source account ID
-              notificationType: NotificationType.WITHDRAWAL,
-              status: NotificationStatus.SUCCESS,
-              message: `Withdrawal of ${Math.abs(event.amount)} successful.`,
-              details: {
+          // Se tiver informações do usuário de origem, tentamos notificar, mas a transação já está completa
+          if (event.sourceUserId && event.amount) {
+            const notifySourcePayload = {
+              commandName: 'NotifyUserCommand',
+              payload: {
                 transactionId: event.transactionId,
-                amount: Math.abs(event.amount),
+                userId: event.sourceUserId,
+                accountId: event.accountId, // source account ID
+                notificationType: NotificationType.WITHDRAWAL,
+                status: NotificationStatus.SUCCESS,
+                message: `Withdrawal of ${Math.abs(event.amount)} successful.`,
+                details: {
+                  transactionId: event.transactionId,
+                  amount: Math.abs(event.amount),
+                },
               },
-            },
-          };
-          await this.rabbitMQService.publishToExchange(
-            'commands.notify_user',
-            notifySourcePayload,
-          );
-          this.loggingService.info(
-            `[${handlerName}] Published NotifyUserCommand (Source) for ${event.transactionId} (no destination)`,
-          );
-          // O UserNotifiedHandler irá eventualmente marcar como COMPLETED
+            };
+            try {
+              await this.rabbitMQService.publishToExchange(
+                'commands.notify_user',
+                notifySourcePayload,
+              );
+              this.loggingService.info(
+                `[${handlerName}] Published NotifyUserCommand (Source) for ${event.transactionId} (no destination)`,
+              );
+            } catch (error) {
+              this.loggingService.error(
+                `[${handlerName}] Failed to publish notification, but transaction is already COMPLETED: ${error.message}`,
+                { transactionId: event.transactionId },
+              );
+            }
+          } else {
+            this.loggingService.warn(
+              `[${handlerName}] Missing sourceUserId or amount for notification, but transaction is COMPLETED`,
+              { transactionId: event.transactionId },
+            );
+          }
           return;
         }
 
@@ -641,15 +842,17 @@ export class WithdrawalSaga {
     return events$.pipe(
       ofType(UserNotifiedEvent),
       filter((event: UserNotifiedEvent) => {
+        // Verificar se é um evento para a conta de origem
         const isSource = event.sourceAccountId === event.accountId;
-        this.loggingService.info(
-          `[WithdrawalSaga] Filter sourceUserNotified for ${event.transactionId}: isSource=${isSource}`,
-          {
-            sourceAccountId: event.sourceAccountId,
-            accountId: event.accountId,
-          },
+
+        // Apenas processar eventos de origem e não duplicados
+        return (
+          isSource &&
+          !this.hasProcessedEvent(
+            'SourceUserNotifiedEvent',
+            event.transactionId,
+          )
         );
-        return isSource;
       }),
       mergeMap(async (event: UserNotifiedEvent) => {
         this.loggingService.info(
@@ -760,15 +963,28 @@ export class WithdrawalSaga {
     return events$.pipe(
       ofType(UserNotifiedEvent),
       filter((event: UserNotifiedEvent) => {
+        // Verificar se é um evento para a conta de destino
         const isDestination = event.destinationAccountId === event.accountId;
+
+        // Adicionar log detalhado para debug
         this.loggingService.info(
-          `[WithdrawalSaga] Filter destinationUserNotified for ${event.transactionId}: isDestination=${isDestination}`,
+          `[WithdrawalSaga] destinationUserNotified filter check for transaction ${event.transactionId}`,
           {
-            destinationAccountId: event.destinationAccountId,
+            isDestination,
             accountId: event.accountId,
+            destinationAccountId: event.destinationAccountId,
+            sourceAccountId: event.sourceAccountId,
           },
         );
-        return isDestination;
+
+        // Apenas processar eventos de destino e não duplicados
+        return (
+          isDestination &&
+          !this.hasProcessedEvent(
+            'DestinationUserNotifiedEvent',
+            event.transactionId,
+          )
+        );
       }),
       mergeMap(async (event: UserNotifiedEvent) => {
         this.loggingService.info(
@@ -928,4 +1144,113 @@ export class WithdrawalSaga {
       }),
     );
   };
+
+  // Configurar timer para verificação periódica de transações travadas
+  private setupStuckTransactionsTimer() {
+    // Executar a cada 20 segundos
+    setInterval(() => {
+      this.checkForStuckTransactions().catch(error => {
+        this.loggingService.error(
+          `[WithdrawalSaga] Error checking for stuck transactions: ${error.message}`,
+          { stack: error.stack },
+        );
+      });
+    }, 20000);
+  }
+
+  // Verificar transações que estão travadas em estados intermediários
+  private async checkForStuckTransactions() {
+    try {
+      const fiveMinutesAgo = new Date();
+      fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5);
+
+      // Buscar transações em estados intermediários que não foram atualizadas há mais de 5 minutos
+      const stuckProcessedTransactions = await this.transactionRepository.find({
+        where: [
+          {
+            status: TransactionStatus.CONFIRMED,
+            updatedAt: LessThan(fiveMinutesAgo),
+          },
+          {
+            status: TransactionStatus.PROCESSED,
+            updatedAt: LessThan(fiveMinutesAgo),
+          },
+          {
+            status: TransactionStatus.RESERVED,
+            updatedAt: LessThan(fiveMinutesAgo),
+          },
+        ],
+        take: 50, // Limitar a 50 transações por vez para evitar sobrecarga
+      });
+
+      if (stuckProcessedTransactions.length > 0) {
+        this.loggingService.info(
+          `[WithdrawalSaga] Found ${stuckProcessedTransactions.length} stuck transactions in intermediate states`,
+          { count: stuckProcessedTransactions.length },
+        );
+
+        // Processar cada transação travada
+        for (const transaction of stuckProcessedTransactions) {
+          this.loggingService.info(
+            `[WithdrawalSaga] Auto-completing stuck transaction ${transaction.id} (status: ${transaction.status}, last updated: ${transaction.updatedAt})`,
+            {
+              transactionId: transaction.id,
+              lastUpdated: transaction.updatedAt,
+              currentStatus: transaction.status,
+            },
+          );
+
+          if (transaction.status === TransactionStatus.RESERVED) {
+            // Se está em RESERVED, mover para PROCESSED primeiro
+            await this.updateTransactionStatus(
+              transaction.id,
+              TransactionStatus.PROCESSED,
+              'Auto-processed after being stuck in RESERVED state',
+            );
+
+            // Pequena pausa para permitir que o estado seja atualizado
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+
+          if (
+            transaction.status === TransactionStatus.PROCESSED ||
+            transaction.status === TransactionStatus.RESERVED
+          ) {
+            // Se estava em PROCESSED ou acabou de ir para PROCESSED, mover para CONFIRMED
+            await this.updateTransactionStatus(
+              transaction.id,
+              TransactionStatus.CONFIRMED,
+              'Auto-confirmed after being stuck in PROCESSED state',
+            );
+
+            // Pequena pausa para permitir que o estado seja atualizado
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+
+          // Finalmente, mover para COMPLETED
+          await this.updateTransactionStatus(
+            transaction.id,
+            TransactionStatus.COMPLETED,
+            'Auto-completed after being stuck in intermediate state',
+          );
+
+          // Publicar evento de transação completa para garantir que qualquer lógica adicional seja executada
+          this.eventBus.publish(
+            new TransactionCompletedEvent(
+              transaction.id,
+              transaction.sourceAccountId,
+              transaction.destinationAccountId,
+              transaction.amount,
+              true,
+            ),
+          );
+        }
+      }
+    } catch (error) {
+      this.loggingService.error(
+        `[WithdrawalSaga] Error in checkForStuckTransactions: ${error.message}`,
+        { stack: error.stack },
+      );
+    }
+  }
 }
