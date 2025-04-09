@@ -1,6 +1,7 @@
 import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import {
   TransactionDocument,
   TransactionStatus,
@@ -14,6 +15,7 @@ export class TransactionProcessedHandler
   constructor(
     @InjectModel('TransactionDocument')
     private transactionModel: Model<TransactionDocument>,
+    private rabbitMQService: RabbitMQService,
   ) {
     console.log('TransactionProcessedHandler initialized');
   }
@@ -56,6 +58,19 @@ export class TransactionProcessedHandler
           error: error,
         });
 
+        // Publicar no RabbitMQ
+        this.rabbitMQService.publish('events', 'transaction.processed', {
+          id: transactionId,
+          sourceAccountId,
+          destinationAccountId,
+          amount,
+          type,
+          status,
+          processedAt: new Date(),
+          error: error,
+          success: !error,
+        });
+
         console.log(
           `Transaction read model created: ${transactionId}`,
           newTransaction,
@@ -77,6 +92,19 @@ export class TransactionProcessedHandler
         },
         { new: true },
       );
+
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'transaction.processed', {
+        id: transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        type,
+        status,
+        processedAt: new Date(),
+        error: error,
+        success: !error,
+      });
 
       console.log(
         `Transaction read model updated: ${transactionId} with status ${status}`,

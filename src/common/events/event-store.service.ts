@@ -26,7 +26,7 @@ export class EventStoreService implements OnModuleInit {
     try {
       await this.rabbitMQService.createQueueAndBind(
         'events',
-        ['transaction.*', 'account.*'],
+        ['transaction.*', 'account.*', 'balance.*'],
         { durable: true },
       );
 
@@ -51,14 +51,44 @@ export class EventStoreService implements OnModuleInit {
     const { routingKey } = amqpMsg.fields;
     const parsedData = JSON.parse(data);
 
+    // Determinar o aggregateId com base no routingKey e no tipo de evento
+    let aggregateId: string;
+
+    if (routingKey.startsWith('transaction.')) {
+      // Para eventos de transação, o aggregateId é o ID da transação
+      aggregateId = parsedData.id || parsedData.transactionId;
+    } else if (routingKey.startsWith('account.')) {
+      // Para eventos de conta, o aggregateId é o ID da conta
+      aggregateId = parsedData.id || parsedData.accountId;
+    } else if (routingKey.startsWith('balance.')) {
+      // Para eventos relacionados ao saldo, pode ser o ID da transação associada
+      aggregateId = parsedData.transactionId || parsedData.accountId;
+    } else {
+      // Para outros tipos de eventos
+      aggregateId =
+        parsedData.id ||
+        parsedData.transactionId ||
+        parsedData.accountId ||
+        parsedData.userId ||
+        uuidv4(); // Fallback para um UUID se nenhum ID puder ser encontrado
+    }
+
+    if (!aggregateId) {
+      this.logger.error(
+        `Cannot determine aggregateId for event: ${routingKey}`,
+        parsedData,
+      );
+      throw new Error(`Cannot determine aggregateId for event: ${routingKey}`);
+    }
+
     try {
-      this.saveEvent(routingKey, parsedData, parsedData.id);
+      this.saveEvent(routingKey, parsedData, aggregateId);
       this.logger.log(`Successfully processed event: ${routingKey}`);
     } catch (error) {
       this.logger.error(
         `Error processing transaction event: ${error.message}`,
         {
-          transactionId: parsedData.id,
+          aggregateId,
           routingKey,
           error,
         },

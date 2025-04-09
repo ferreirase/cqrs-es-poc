@@ -3,6 +3,7 @@ import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ReleaseBalanceCommand } from '../../commands/impl/release-balance.command';
 import { BalanceReleasedEvent } from '../../events/impl/balance-released.event';
@@ -22,6 +23,7 @@ export class ReleaseBalanceHandler
     private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: ReleaseBalanceCommand): Promise<void> {
@@ -90,6 +92,17 @@ export class ReleaseBalanceHandler
         new BalanceReleasedEvent(transactionId, accountId, amount, true),
       );
 
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'balance.released', {
+        transactionId,
+        accountId,
+        amount,
+        status: TransactionStatus.CANCELED,
+        success: true,
+        releasedAt: new Date(),
+        previousStatus: transaction.status,
+      });
+
       this.loggingService.info(
         `[ReleaseBalanceHandler] Successfully released balance for account ${accountId}`,
       );
@@ -105,6 +118,17 @@ export class ReleaseBalanceHandler
       this.eventBus.publish(
         new BalanceReleasedEvent(transactionId, accountId, amount, false),
       );
+
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'balance.released', {
+        transactionId,
+        accountId,
+        amount,
+        status: TransactionStatus.FAILED,
+        success: false,
+        error: error.message,
+        releasedAt: new Date(),
+      });
 
       throw error;
     } finally {

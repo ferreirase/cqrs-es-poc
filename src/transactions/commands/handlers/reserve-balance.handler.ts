@@ -3,6 +3,7 @@ import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountEntity } from '../../../accounts/models/account.entity';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ReserveBalanceCommand } from '../../commands/impl/reserve-balance.command';
 import { BalanceReservedEvent } from '../../events/impl/balance-reserved.event';
@@ -23,6 +24,7 @@ export class ReserveBalanceHandler
     private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: ReserveBalanceCommand): Promise<void> {
@@ -87,6 +89,16 @@ export class ReserveBalanceHandler
         new BalanceReservedEvent(transactionId, accountId, amount, true),
       );
 
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'balance.reserved', {
+        transactionId,
+        accountId,
+        amount,
+        status: TransactionStatus.RESERVED,
+        success: true,
+        reservedAt: new Date(),
+      });
+
       this.loggingService.info(
         `[ReserveBalanceHandler] Successfully reserved balance for account ${accountId}`,
       );
@@ -102,6 +114,17 @@ export class ReserveBalanceHandler
       this.eventBus.publish(
         new BalanceReservedEvent(transactionId, accountId, amount, false),
       );
+
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'balance.reserved', {
+        transactionId,
+        accountId,
+        amount,
+        status: TransactionStatus.FAILED,
+        success: false,
+        error: error.message,
+        reservedAt: new Date(),
+      });
 
       throw error;
     } finally {

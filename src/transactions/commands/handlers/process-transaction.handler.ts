@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AccountBalanceUpdatedEvent } from '../../../accounts/events/impl/account-balance-updated.event';
 import { AccountEntity } from '../../../accounts/models/account.entity';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ProcessTransactionCommand } from '../../commands/impl/process-transaction.command';
 import { TransactionProcessedEvent } from '../../events/impl/transaction-processed.event';
@@ -25,6 +26,7 @@ export class ProcessTransactionHandler
     private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: ProcessTransactionCommand): Promise<void> {
@@ -162,6 +164,19 @@ export class ProcessTransactionHandler
         ),
       );
 
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'transaction.processed', {
+        id: transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        type: TransactionType.WITHDRAWAL,
+        status: TransactionStatus.PROCESSED,
+        description,
+        processedAt: new Date(),
+        success: true,
+      });
+
       this.loggingService.info(
         `[ProcessTransactionHandler] Successfully processed transaction ${transactionId}`,
       );
@@ -186,6 +201,20 @@ export class ProcessTransactionHandler
           TransactionType.WITHDRAWAL,
         ),
       );
+
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'transaction.processed', {
+        id: transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        type: TransactionType.WITHDRAWAL,
+        status: TransactionStatus.FAILED,
+        description,
+        processedAt: new Date(),
+        success: false,
+        error: error.message,
+      });
 
       throw error;
     } finally {

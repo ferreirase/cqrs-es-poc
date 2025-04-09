@@ -2,6 +2,7 @@ import { CommandBus, CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { CheckAccountBalanceCommand } from '../../commands/impl/check-account-balance.command';
 import { WithdrawalCommand } from '../../commands/impl/withdrawal.command';
@@ -18,6 +19,7 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
     private transactionRepository: Repository<TransactionEntity>,
     private commandBus: CommandBus,
     private loggingService: LoggingService,
+    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: WithdrawalCommand): Promise<void> {
@@ -49,6 +51,14 @@ export class WithdrawalHandler implements ICommandHandler<WithdrawalCommand> {
     this.commandBus.execute(
       new CheckAccountBalanceCommand(transactionId, sourceAccountId, amount),
     );
+
+    this.rabbitMQService.publish('events', 'transaction.created', {
+      id: transactionId,
+      sourceAccountId,
+      destinationAccountId,
+      amount,
+      type: TransactionType.WITHDRAWAL,
+    });
 
     this.loggingService.info(
       `[WithdrawalHandler] Withdrawal saga started for transaction ${transactionId}`,

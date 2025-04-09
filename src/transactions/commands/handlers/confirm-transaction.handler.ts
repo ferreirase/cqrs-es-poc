@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { ConfirmTransactionCommand } from '../../commands/impl/confirm-transaction.command';
 import { TransactionConfirmedEvent } from '../../events/impl/transaction-confirmed.event';
@@ -19,6 +20,7 @@ export class ConfirmTransactionHandler
     private transactionRepository: Repository<TransactionEntity>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private rabbitMQService: RabbitMQService,
   ) {}
 
   async execute(command: ConfirmTransactionCommand): Promise<void> {
@@ -57,6 +59,18 @@ export class ConfirmTransactionHandler
         ),
       );
 
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'transaction.confirmed', {
+        id: transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        status: TransactionStatus.CONFIRMED,
+        success: true,
+        confirmedAt: new Date(),
+        type: transaction.type,
+      });
+
       this.loggingService.info(
         `[ConfirmTransactionHandler] Successfully confirmed transaction ${transactionId}`,
       );
@@ -75,6 +89,18 @@ export class ConfirmTransactionHandler
           false,
         ),
       );
+
+      // Publicar no RabbitMQ
+      this.rabbitMQService.publish('events', 'transaction.confirmed', {
+        id: transactionId,
+        sourceAccountId,
+        destinationAccountId,
+        amount,
+        status: TransactionStatus.FAILED,
+        success: false,
+        error: error.message,
+        confirmedAt: new Date(),
+      });
 
       throw error;
     }
