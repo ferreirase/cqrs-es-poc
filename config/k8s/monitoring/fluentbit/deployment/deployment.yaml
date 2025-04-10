@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluentbit
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fluentbit
+  template:
+    metadata:
+      labels:
+        app: fluentbit
+    spec:
+      serviceAccountName: fluentbit
+      containers:
+        - name: fluentbit
+          image: fluent/fluent-bit:latest
+          ports:
+            - containerPort: 24224
+              name: forward
+            - containerPort: 24224
+              protocol: UDP
+              name: forward-udp
+            - containerPort: 2020
+              name: metrics
+          volumeMounts:
+            - name: fluentbit-config
+              mountPath: /fluent-bit/etc
+            - name: varlog
+              mountPath: /var/log
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          resources:
+            limits:
+              cpu: '500m'
+              memory: '256Mi'
+            requests:
+              cpu: '100m'
+              memory: '128Mi'
+      volumes:
+        - name: fluentbit-config
+          configMap:
+            name: fluentbit-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers

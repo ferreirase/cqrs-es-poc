@@ -1,59 +1,62 @@
-# k8s-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cqrs-app-deployment
+  name: transaction-service
   namespace: app
+  labels:
+    app: transaction-service
 spec:
-  replicas: 2 # Iniciar com 2 réplicas
+  replicas: 2
   selector:
     matchLabels:
-      app: cqrs-app
+      app: transaction-service
   template:
     metadata:
       labels:
-        app: cqrs-app
+        app: transaction-service
     spec:
-      # Remover initContainer por enquanto para o app iniciar corretamente
       containers:
-        - name: cqrs-app-container
-          # Substitua pela sua imagem Docker correta
-          image: ferreirase/cqrs-app:latest # Substitua pela sua imagem real
-          imagePullPolicy: Always # Garante que k8s puxe a imagem mais recente
+        - name: transaction-service
+          image: transaction-service:latest
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 3001 # Porta que a app escuta (deve bater com PORT no ConfigMap e EXPOSE no Dockerfile)
-          envFrom:
-            - configMapRef:
-                name: app-config # Carrega variáveis do ConfigMap
-            - secretRef:
-                name: app-secrets # Carrega variáveis do Secret
-          readinessProbe:
-            httpGet:
-              path: /api/health
-              port: 3001
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 3001
-            initialDelaySeconds: 30
-            periodSeconds: 20
-          startupProbe:
-            httpGet:
-              path: /api/health
-              port: 3001
-            failureThreshold: 30
-            periodSeconds: 10
+            - containerPort: 3001
+              name: http
           resources:
-            requests:
-              cpu: '200m'
-              memory: '256Mi'
             limits:
               cpu: '500m'
               memory: '512Mi'
+            requests:
+              cpu: '100m'
+              memory: '256Mi'
+          livenessProbe:
             httpGet:
-              path: /api/health
-              port: 3001
-            initialDelaySeconds: 15
+              path: /health
+              port: http
+            initialDelaySeconds: 30
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-service
+  namespace: app
+spec:
+  selector:
+    app: transaction-service
+  ports:
+    - port: 3001
+      targetPort: 3001
+      name: http
+  type: ClusterIP

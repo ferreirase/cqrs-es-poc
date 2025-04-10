@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentbit
+  namespace: monitoring
+spec:
+  selector:
+    app: fluentbit
+  ports:
+    - port: 24224
+      targetPort: 24224
+      name: forward
+    - port: 24224
+      protocol: UDP
+      targetPort: 24224
+      name: forward-udp
+    - port: 2020
+      targetPort: 2020
+      name: metrics
+  type: ClusterIP

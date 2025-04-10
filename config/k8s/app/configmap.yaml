@@ -1,33 +1,26 @@
-# k8s-configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config
   namespace: app
 data:
-  # RABBITMQ
-  RABBITMQ_HOST: 'rabbitmq.monitoring.svc.cluster.local'
-  RABBITMQ_PORT: '5672'
-  RABBITMQ_USER: 'admin'
-  # MONITORING
-  PROMETHEUS_METRICS_PATH: '/api/metrics'
-  LOKI_HOST: 'loki.monitoring.svc.cluster.local'
-  LOKI_PORT: '3100'
-  # POSTGRES
-  POSTGRES_HOST: 'postgres-service.database.svc.cluster.local'
-  POSTGRES_PORT: '5432'
-  POSTGRES_USER: 'postgres'
-  POSTGRES_PASSWORD: 'postgres'
-  POSTGRES_DB: 'transaction_db'
-  # MONGO
+  NODE_ENV: 'production'
+  # MongoDB Config
+  MONGO_USER: 'admin'
   MONGO_HOST: 'mongodb.database.svc.cluster.local'
   MONGO_PORT: '27017'
-  MONGO_USER: 'admin'
-  MONGO_PASSWORD: 'mongodb'
   MONGO_DB: 'transaction_db'
   MONGO_AUTH_SOURCE: 'admin'
-  # GERAL
-  NODE_ENV: 'production'
-  PORT: '3001'
-  # Loki
-  LOKI_URL: 'http://loki-stack.monitoring.svc.cluster.local:3100/loki/api/v1/push'
+  # Postgres Config
+  POSTGRES_HOST: 'postgres.database.svc.cluster.local'
+  POSTGRES_PORT: '5432'
+  POSTGRES_USER: 'postgres'
+  POSTGRES_DB: 'transaction_db'
+  # RabbitMQ Config
+  RABBITMQ_HOST: 'rabbitmq.database.svc.cluster.local'
+  RABBITMQ_PORT: '5672'
+  RABBITMQ_USER: 'admin'
+  # Loki Config
+  LOKI_HOST: 'loki.monitoring.svc.cluster.local'
+  LOKI_PORT: '3100'
+  LOKI_USERNAME: 'admin'

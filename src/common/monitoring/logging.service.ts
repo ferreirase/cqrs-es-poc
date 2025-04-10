@@ -36,7 +36,7 @@ export class LoggingService {
           ),
         }),
         new LokiTransport({
-          host: 'http://loki.monitoring.svc.cluster.local:3100',
+          host: process.env.LOKI_HOST,
           labels: {
             app: 'cqrs-es-poc',
             service: 'transaction-service',
