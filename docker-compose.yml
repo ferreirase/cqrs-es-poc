@@ -29,8 +29,8 @@ services:
       - '5672:5672' # AMQP port
       - '15672:15672' # Management UI port
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
     restart: unless-stopped
     networks:
       - app-network
@@ -41,7 +41,7 @@ services:
     ports:
       - '9090:9090'
     volumes:
-      - ./config/prometheus:/etc/prometheus
+      - ./config/monitoring/prometheus:/etc/prometheus
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -62,11 +62,17 @@ services:
       - '3100:3100'
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
-      - ./config/loki/local-config.yaml:/etc/loki/local-config.yaml
+      - ./config/monitoring/loki/local-config.yaml:/etc/loki/local-config.yaml
       - loki_data:/loki
     restart: unless-stopped
     networks:
       - app-network
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--tries=1', 'http://localhost:3100/ready']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
   # FluentBit - Para coleta de logs
   fluentbit:
@@ -76,7 +82,7 @@ services:
       - '24224:24224/udp'
       - '2020:2020'
     volumes:
-      - ./config/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./config/monitoring/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
       - ./logs:/var/log
     environment:
       LOKI_HOST: loki
@@ -84,6 +90,9 @@ services:
     restart: unless-stopped
     networks:
       - app-network
+    depends_on:
+      loki:
+        condition: service_healthy
 
   # Grafana - Para visualização de métricas e logs
   grafana:
@@ -96,7 +105,7 @@ services:
       GF_USERS_ALLOW_SIGN_UP: 'false'
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/monitoring/grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       - prometheus
       - loki

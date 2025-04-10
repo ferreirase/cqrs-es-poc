@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rabbitmq-dashboard-access
+rules:
+  - apiGroups: ['rbac.authorization.k8s.io']
+    resources: ['clusterrolebindings', 'clusterroles']
+    verbs: ['get', 'list']
+  - apiGroups: ['']
+    resources:
+      [
+        'namespaces',
+        'nodes',
+        'pods',
+        'services',
+        'persistentvolumeclaims',
+        'persistentvolumes',
+        'replicationcontrollers',
+      ]
+    verbs: ['get', 'list']
+  - apiGroups: ['apps']
+    resources: ['deployments', 'statefulsets', 'daemonsets', 'replicasets']
+    verbs: ['get', 'list']
+  - apiGroups: ['autoscaling']
+    resources: ['horizontalpodautoscalers']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rabbitmq-dashboard-access
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq
+    namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rabbitmq-dashboard-access

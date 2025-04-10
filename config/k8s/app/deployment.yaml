@@ -1,0 +1,48 @@
+# k8s-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cqrs-app-deployment
+spec:
+  replicas: 2 # Iniciar com 2 réplicas
+  selector:
+    matchLabels:
+      app: cqrs-app
+  template:
+    metadata:
+      labels:
+        app: cqrs-app
+    spec:
+      containers:
+        - name: cqrs-app-container
+          # Substitua pela sua imagem Docker correta
+          image: ferreirase/cqrs-app
+          imagePullPolicy: Always # Garante que k8s puxe a imagem mais recente
+          ports:
+            - containerPort: 3001 # Porta que a app escuta (deve bater com PORT no ConfigMap e EXPOSE no Dockerfile)
+          envFrom:
+            - configMapRef:
+                name: app-config # Carrega variáveis do ConfigMap
+            - secretRef:
+                name: app-secrets # Carrega variáveis do Secret
+          # Opcional: Readiness/Liveness Probes para verificar saúde da aplicação
+          readinessProbe:
+            httpGet:
+              path: /api/health # Assumindo que você tem um endpoint de health check em /api/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          livenessProbe:
+            httpGet:
+              path: /api/health # Assumindo endpoint de health check
+              port: 3001
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          # Opcional: Limites de recursos
+          resources:
+            requests:
+              memory: '256Mi'
+              cpu: '250m'
+            limits:
+              memory: '512Mi'
+              cpu: '500m'

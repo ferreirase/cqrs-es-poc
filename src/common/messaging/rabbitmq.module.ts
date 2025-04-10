@@ -1,12 +1,11 @@
 import { RabbitMQModule as NestRabbitMQModule } from '@golevelup/nestjs-rabbitmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { getRabbitMQUrl } from '../../variables';
 import { RabbitMQService } from './rabbitmq.service';
 
 @Module({
   imports: [
-    NestRabbitMQModule.forRootAsync({
+    NestRabbitMQModule.forRootAsync(NestRabbitMQModule, {
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
@@ -16,7 +15,11 @@ import { RabbitMQService } from './rabbitmq.service';
             type: 'topic',
           },
         ],
-        uri: getRabbitMQUrl(configService),
+        uri: `amqp://${configService.get('RABBITMQ_USER')}:${configService.get(
+          'RABBITMQ_PASSWORD',
+        )}@${configService.get('RABBITMQ_HOST')}:${configService.get(
+          'RABBITMQ_PORT',
+        )}`,
         connectionInitOptions: { wait: true },
         defaultRpcTimeout: 10000,
         prefetchCount: 2,

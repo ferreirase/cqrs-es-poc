@@ -1,0 +1,30 @@
+# k8s-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: app
+data:
+  # RABBITMQ
+  RABBITMQ_HOST: 'rabbitmq-external.monitoring.svc.cluster.local'
+  RABBITMQ_PORT: '5672'
+  RABBITMQ_USER: 'admin'
+  RABBITMQ_PASSWORD: 'admin123'
+  # POSTGRES
+  POSTGRES_HOST: 'postgres-postgresql.database.svc.cluster.local'
+  POSTGRES_PORT: '5432'
+  POSTGRES_USER: 'postgres'
+  POSTGRES_PASSWORD: 'postgres'
+  POSTGRES_DB: 'transaction_db'
+  # MONGO
+  MONGO_HOST: 'mongodb.database.svc.cluster.local'
+  MONGO_PORT: '27017'
+  MONGO_USER: 'admin'
+  MONGO_PASSWORD: 'mongodb'
+  MONGO_DB: 'transaction_db'
+  MONGO_AUTH_SOURCE: 'admin'
+  # GERAL
+  NODE_ENV: 'production'
+  PORT: '3001'
+  # Loki
+  LOKI_URL: 'http://loki-stack.monitoring.svc.cluster.local:3100/loki/api/v1/push'

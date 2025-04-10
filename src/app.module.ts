@@ -1,4 +1,3 @@
-import { RabbitMQModule } from '@golevelup/nestjs-rabbitmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CqrsModule } from '@nestjs/cqrs';
@@ -8,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
 import { EventEntity } from './common/events/event.entity';
 import { EventsModule } from './common/events/events.module';
+import { RabbitMQModule } from './common/messaging/rabbitmq.module';
 import { RabbitMQService } from './common/messaging/rabbitmq.service';
 import { MonitoringModule } from './common/monitoring/monitoring.module';
 import { WorkerModule } from './common/workers/worker.module';
@@ -15,35 +15,20 @@ import { WorkersModule } from './common/workers/workers.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { UsersModule } from './users/users.module';
 import {
-  getMongoUri,
   getNodeEnv,
   getPostgresDb,
   getPostgresHost,
   getPostgresPassword,
   getPostgresPort,
   getPostgresUser,
-  getRabbitMQUrl,
+  mongoUri,
 } from './variables';
 
 @Module({
   imports: [
     WorkersModule,
     WorkerModule.forRoot(),
-    RabbitMQModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        exchanges: [
-          {
-            name: 'paymaker-exchange',
-            type: 'topic',
-          },
-        ],
-        uri: getRabbitMQUrl(configService),
-        connectionInitOptions: { wait: true },
-        defaultRpcTimeout: 10000,
-      }),
-    }),
+    RabbitMQModule,
     ScheduleModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
@@ -62,14 +47,14 @@ import {
         password: getPostgresPassword(configService),
         database: getPostgresDb(configService),
         entities: [__dirname + '/**/*.entity{.ts,.js}', EventEntity],
-        synchronize: getNodeEnv(configService) === 'production' ? false : true, // Não use isso em produção
+        synchronize: getNodeEnv(configService) === 'production' ? false : true,
       }),
     }),
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        uri: getMongoUri(configService),
+        uri: mongoUri(configService),
       }),
     }),
     CqrsModule,

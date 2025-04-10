@@ -1,0 +1,20 @@
+# k8s-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cqrs-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cqrs-app-deployment # Nome do seu Deployment
+  minReplicas: 2 # Mínimo 2 pods
+  maxReplicas: 8 # Máximo de 8 pods (ajuste conforme necessário)
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Escalar quando uso médio de CPU > 70%
+          averageUtilization: 70

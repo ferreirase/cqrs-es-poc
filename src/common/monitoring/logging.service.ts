@@ -36,7 +36,7 @@ export class LoggingService {
           ),
         }),
         new LokiTransport({
-          host: 'http://localhost:3100',
+          host: 'http://loki.monitoring.svc.cluster.local:3100',
           labels: {
             app: 'cqrs-es-poc',
             service: 'transaction-service',
@@ -49,6 +49,13 @@ export class LoggingService {
           interval: 5,
           onConnectionError: err =>
             console.error('Loki connection error:', err),
+          timeout: 5000,
+          basicAuth: process.env.LOKI_AUTH
+            ? {
+                username: process.env.LOKI_USERNAME || 'admin',
+                password: process.env.LOKI_PASSWORD || 'admin',
+              }
+            : undefined,
         }),
         // FluentBit transport over TCP
         new winston.transports.Http({
