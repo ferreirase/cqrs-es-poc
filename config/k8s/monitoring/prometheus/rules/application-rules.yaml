@@ -1,0 +1,28 @@
+groups:
+  - name: cqrs_application_rules
+    rules:
+      # Event Store metrics
+      - record: event_store:events_per_minute
+        expr: rate(app_event_store_events_total[1m])
+      - record: event_store:processing_time_95th
+        expr: histogram_quantile(0.95, rate(app_event_store_processing_duration_seconds_bucket[5m]))
+
+      # Transaction metrics
+      - record: transactions:success_rate
+        expr: sum(rate(app_transactions_total{status="success"}[5m])) / sum(rate(app_transactions_total[5m]))
+      - record: transactions:amount_total
+        expr: sum(rate(app_transaction_amount_distribution_sum[5m]))
+      - record: transactions:in_progress_total
+        expr: sum(app_transactions_in_progress) by (type)
+
+      # Account metrics
+      - record: accounts:active_total
+        expr: sum(app_active_accounts)
+      - record: accounts:operation_success_rate
+        expr: sum(rate(app_account_operations_total{status="success"}[5m])) / sum(rate(app_account_operations_total[5m]))
+
+      # API metrics
+      - record: api:error_rate
+        expr: sum(rate(app_api_errors_total[5m])) / sum(rate(app_api_requests_total[5m]))
+      - record: api:latency_95th
+        expr: histogram_quantile(0.95, sum by (le) (rate(app_api_request_duration_seconds_bucket[5m])))

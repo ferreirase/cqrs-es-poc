@@ -1,7 +1,7 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-cross-namespace
+  name: allow-monitoring
   namespace: app
 spec:
   podSelector: {}
@@ -11,16 +11,11 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: database
+              kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
-          port: 5432
+          port: 3100 # Loki
         - protocol: TCP
-          port: 27017
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: messaging
-      ports:
+          port: 9090 # Prometheus
         - protocol: TCP
-          port: 5672
+          port: 3000 # Grafana

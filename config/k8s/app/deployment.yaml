@@ -27,7 +27,6 @@ spec:
                 name: app-config # Carrega variáveis do ConfigMap
             - secretRef:
                 name: app-secrets # Carrega variáveis do Secret
-          # Opcional: Readiness/Liveness Probes para verificar saúde da aplicação
           readinessProbe:
             httpGet:
               path: /api/health
@@ -36,15 +35,25 @@ spec:
             periodSeconds: 10
           livenessProbe:
             httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          startupProbe:
+            httpGet:
               path: /api/health
               port: 3001
-            initialDelaySeconds: 60
-            periodSeconds: 30
-          # Opcional: Limites de recursos
+            failureThreshold: 30
+            periodSeconds: 10
           resources:
             requests:
-              memory: '1024Mi'
-              cpu: '1000m'
+              cpu: '200m'
+              memory: '256Mi'
             limits:
-              memory: '2048Mi'
-              cpu: '2000m'
+              cpu: '500m'
+              memory: '512Mi'
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 10

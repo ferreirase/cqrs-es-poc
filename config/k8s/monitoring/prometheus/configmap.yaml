@@ -1,27 +1,121 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s
-      evaluation_interval: 15s
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: 'cqrs-es-poc'
+    environment: 'production'
 
-    scrape_configs:
-      - job_name: 'prometheus'
-        static_configs:
-          - targets: ['localhost:9090']
+rule_files:
+  - /etc/prometheus/rules/*.yaml
 
-      - job_name: 'cqrs-es-poc'
-        metrics_path: /api/metrics
-        static_configs:
-          - targets: ['cqrs-es-poc-service:3001']
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
 
-      - job_name: 'rabbitmq'
-        static_configs:
-          - targets: ['rabbitmq:15692']
+  - job_name: 'kubernetes-service-endpoints'
+    kubernetes_sd_configs:
+      - role: endpoints
+    relabel_configs:
+      - source_labels:
+          [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels:
+          [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+        action: replace
+        target_label: __scheme__
+        regex: (https?)
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels:
+          [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_service_name]
+        action: replace
+        target_label: kubernetes_service_name
 
-      - job_name: 'node-exporter'
-        static_configs:
-          - targets: ['node-exporter:9100']
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq.monitoring.svc.cluster.local:15692']
+    metrics_path: /metrics
+
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongodb-exporter.database.svc.cluster.local:9216']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter.database.svc.cluster.local:9187']
+
+  - job_name: 'fluent-bit'
+    static_configs:
+      - targets: ['fluent-bit.monitoring.svc.cluster.local:2020']
+    metrics_path: /api/v1/metrics/prometheus
+
+  - job_name: 'cqrs-app'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    metrics_path: /api/metrics
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['app']
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: cqrs-app
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        action: keep
+        regex: 3001
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: kubernetes_namespace
+        action: replace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: kubernetes_pod_name
+        action: replace
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'app_.*'
+        action: keep
+      - source_labels: [__name__]
+        regex: 'event_store_.*|transactions_.*|account_.*'
+        action: keep
+
+storage:
+  tsdb:
+    retention_time: 15d
+    retention_size: 10GB
+    min_block_duration: 2h
+    max_block_duration: 24h
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+remote_write:
+  - url: 'http://thanos-receive:10901/api/v1/receive'
+    remote_timeout: 30s
+    queue_config:
+      capacity: 2500
+      max_shards: 200
+      max_samples_per_send: 500
+      batch_send_deadline: 5s
+      min_shards: 1
+      max_retries: 5
+
+remote_read:
+  - url: 'http://thanos-query:10902/api/v1/read'
+    read_recent: true

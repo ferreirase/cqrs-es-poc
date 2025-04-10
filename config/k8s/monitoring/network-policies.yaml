@@ -1,0 +1,89 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-network-policy
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Permitir tráfego de entrada para todos os endpoints de métricas
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 3001
+          protocol: TCP
+          # NestJS metrics endpoint
+        - port: 9090
+          protocol: TCP
+          # Prometheus
+        - port: 3100
+          protocol: TCP
+          # Loki
+        - port: 3000
+          protocol: TCP
+          # Grafana
+        - port: 9187
+          protocol: TCP
+          # Postgres exporter
+        - port: 9216
+          protocol: TCP
+          # MongoDB exporter
+        - port: 15692
+          protocol: TCP
+          # RabbitMQ metrics
+        - protocol: TCP
+          port: 9090 # Prometheus
+        - protocol: TCP
+          port: 3100 # Loki
+        - protocol: TCP
+          port: 3000 # Grafana
+        - protocol: TCP
+          port: 24224 # Fluent-bit forward
+        - protocol: TCP
+          port: 2020 # Fluent-bit metrics
+        - protocol: TCP
+          port: 5672 # RabbitMQ AMQP
+        - protocol: TCP
+          port: 15672 # RabbitMQ Management
+        - protocol: TCP
+          port: 15692 # RabbitMQ Prometheus
+  egress:
+    # Permitir tráfego de saída para K8s API (necessário para service discovery)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-apiserver
+      ports:
+        - protocol: TCP
+          port: 443
+    # Permitir tráfego de saída para apps monitorados
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - protocol: TCP
+          port: 3001 # App
+        - protocol: TCP
+          port: 5432 # Postgres
+        - protocol: TCP
+          port: 27017 # MongoDB
+        - protocol: TCP
+          port: 9187 # Postgres-exporter
+        - protocol: TCP
+          port: 9216 # MongoDB-exporter

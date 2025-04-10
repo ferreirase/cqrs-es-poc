@@ -1,17 +1,64 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-datasources
+  name: grafana-config
+  namespace: monitoring
 data:
-  datasources.yaml: |
-    apiVersion: 1
-    datasources:
-    - name: Prometheus
-      type: prometheus
-      url: http://prometheus.monitoring.svc.cluster.local:9090
-      access: proxy
-      isDefault: true
-    - name: Loki
-      type: loki
-      url: http://loki.monitoring.svc.cluster.local:3100
-      access: proxy
+  grafana.ini: |
+    [server]
+    root_url = http://grafana.monitoring.svc.cluster.local:3000
+
+    [database]
+    type = sqlite3
+    path = grafana.db
+
+    [security]
+    admin_user = admin
+    admin_password = ${GRAFANA_PASSWORD}
+    allow_embedding = true
+    disable_gravatar = true
+
+    [auth]
+    disable_login_form = false
+    disable_signout_menu = false
+
+    [auth.anonymous]
+    enabled = true
+    org_role = Viewer
+
+    [dashboards]
+    min_refresh_interval = 5s
+    default_home_dashboard_path = /etc/grafana/dashboards/application-dashboard.json
+
+    [alerting]
+    enabled = true
+    execute_alerts = true
+    error_or_timeout = alerting
+    nodata_or_nullvalues = alerting
+    evaluation_timeout_seconds = 30
+    notification_timeout_seconds = 30
+    max_attempts = 3
+
+    [unified_alerting]
+    enabled = true
+
+    [feature_toggles]
+    enable = tempoSearch tempoBackendSearch tempoServiceGraph
+
+    [plugins]
+    enable_alpha = false
+
+    [log]
+    mode = console
+    level = info
+
+    [metrics]
+    enabled = true
+    basic_auth_username = ${METRICS_USER}
+    basic_auth_password = ${METRICS_PASSWORD}
+
+    [panels]
+    disable_sanitize_html = true
+
+    [smtp]
+    enabled = false

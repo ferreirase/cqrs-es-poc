@@ -6,12 +6,15 @@ metadata:
   namespace: app
 data:
   # RABBITMQ
-  RABBITMQ_HOST: 'rabbitmq-external.monitoring.svc.cluster.local'
+  RABBITMQ_HOST: 'rabbitmq.monitoring.svc.cluster.local'
   RABBITMQ_PORT: '5672'
   RABBITMQ_USER: 'admin'
-  RABBITMQ_PASSWORD: 'admin123'
+  # MONITORING
+  PROMETHEUS_METRICS_PATH: '/api/metrics'
+  LOKI_HOST: 'loki.monitoring.svc.cluster.local'
+  LOKI_PORT: '3100'
   # POSTGRES
-  POSTGRES_HOST: 'postgres-postgresql.database.svc.cluster.local'
+  POSTGRES_HOST: 'postgres-service.database.svc.cluster.local'
   POSTGRES_PORT: '5432'
   POSTGRES_USER: 'postgres'
   POSTGRES_PASSWORD: 'postgres'

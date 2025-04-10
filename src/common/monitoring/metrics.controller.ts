@@ -1,7 +1,7 @@
 import { Controller, Get, Header } from '@nestjs/common';
 import { PrometheusService } from './prometheus.service';
 
-@Controller('metrics')
+@Controller('api/metrics')
 export class MetricsController {
   constructor(private readonly prometheusService: PrometheusService) {}
 

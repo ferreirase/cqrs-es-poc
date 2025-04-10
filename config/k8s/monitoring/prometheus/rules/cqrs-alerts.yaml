@@ -1,0 +1,47 @@
+groups:
+  - name: cqrs_alerts
+    rules:
+      - alert: HighEventProcessingLatency
+        expr: histogram_quantile(0.95, rate(app_event_store_processing_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High event processing latency
+          description: 95th percentile of event processing time is above 1 second for 5 minutes
+
+      - alert: EventProcessingBacklog
+        expr: sum(app_transactions_in_progress) by (type) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Large event processing backlog
+          description: More than 100 transactions are in progress for over 5 minutes
+
+      - alert: HighTransactionFailureRate
+        expr: (sum(rate(app_transactions_total{status="failed"}[5m])) / sum(rate(app_transactions_total[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: High transaction failure rate
+          description: Transaction failure rate is above 5% for 5 minutes
+
+      - alert: EventStoreLag
+        expr: (time() - app_event_store_last_event_timestamp) > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Event store processing lag detected
+          description: No new events have been processed in the last 5 minutes
+
+      - alert: AggregateReconciliationFailure
+        expr: rate(app_command_results{result="reconciliation_failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Aggregate reconciliation failures detected
+          description: Some aggregates are failing to reconcile their state

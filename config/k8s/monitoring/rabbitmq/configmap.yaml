@@ -1,17 +1,35 @@
-# rabbitmq-configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rabbitmq-config
+  namespace: monitoring
 data:
   rabbitmq.conf: |
-    default_user = admin
-    default_pass = admin
-    management.listener.port = 15672
-    loopback_users.guest = false
+    # Enable Prometheus metrics
+    prometheus.return_per_object_metrics = true
+    management.enable_metrics_collector = true
+    prometheus.tcp.port = 15692
+
+    # Clustering
     cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
-    cluster_formation.k8s.host = kubernetes.default.svc
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
     cluster_formation.k8s.address_type = hostname
     cluster_formation.node_cleanup.interval = 30
     cluster_formation.node_cleanup.only_log_warning = true
-    cluster_partition_handling = pause_minority
+
+    # Security and resource management
+    total_memory_available_override_value = 1GB
+    vm_memory_high_watermark.relative = 0.8
+    disk_free_limit.relative = 2.0
+
+    # Management plugin
+    management.load_definitions = /etc/rabbitmq/definitions.json
+
+    # Logging
+    log.file.level = info
+    log.console = true
+    log.console.level = info
+
+    # Federation for cross-namespace communication
+    federation_configuration.exchange-name = events
+    federation_configuration.uri = amqp://guest:guest@rabbitmq.monitoring.svc.cluster.local:5672

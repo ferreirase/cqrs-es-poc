@@ -1,0 +1,91 @@
+groups:
+  - name: node_alerts
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU usage on {{ $labels.instance }}
+          description: CPU usage is above 80% for more than 5 minutes
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High memory usage on {{ $labels.instance }}
+          description: Memory usage is above 85% for more than 5 minutes
+
+  - name: application_alerts
+    rules:
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High latency on endpoint {{ $labels.path }}
+          description: 95th percentile latency is above 1s for more than 5 minutes
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: High error rate on service {{ $labels.service }}
+          description: Error rate is above 5% for more than 5 minutes
+
+  - name: database_alerts
+    rules:
+      - alert: PostgresHighConnections
+        expr: pg_stat_activity_count > pg_settings_max_connections * 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High number of Postgres connections
+          description: More than 80% of available Postgres connections are in use
+
+      - alert: MongoDBHighConnections
+        expr: mongodb_connections{state="current"} > mongodb_connections{state="available"} * 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High number of MongoDB connections
+          description: More than 80% of available MongoDB connections are in use
+
+  - name: rabbitmq_alerts
+    rules:
+      - alert: RabbitMQHighMemory
+        expr: rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High memory usage in RabbitMQ
+          description: RabbitMQ is using more than 80% of its configured memory limit
+
+      - alert: RabbitMQQueueGrowing
+        expr: rabbitmq_queue_messages_ready > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Queue size growing in RabbitMQ
+          description: More than 1000 messages in queue for over 10 minutes
+
+  - name: recording_rules
+    rules:
+      - record: job:http_requests_total:rate5m
+        expr: rate(http_requests_total[5m])
+
+      - record: job:http_request_duration_seconds:p95
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+
+      - record: job:node_memory_utilization:ratio
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes

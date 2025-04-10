@@ -26,6 +26,11 @@ export class PrometheusService {
     this.registerQueryMetrics();
     this.registerResourceMetrics();
     this.registerApiMetrics();
+
+    // Register domain-specific metrics
+    this.registerEventStoreMetrics();
+    this.registerTransactionMetrics();
+    this.registerAccountMetrics();
   }
 
   private registerCommandMetrics(): void {
@@ -161,6 +166,71 @@ export class PrometheusService {
       'network_traffic_bytes',
       'Bytes enviados ou recebidos pela rede',
       ['direction'],
+    );
+  }
+
+  private registerEventStoreMetrics(): void {
+    this.createCounter(
+      'event_store_events_total',
+      'Total de eventos armazenados',
+      ['event_type', 'aggregate_type'],
+    );
+
+    this.createHistogram(
+      'event_store_processing_duration_seconds',
+      'Tempo de processamento de eventos em segundos',
+      ['event_type'],
+      {
+        buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+      },
+    );
+
+    this.createGauge(
+      'event_store_last_event_timestamp',
+      'Timestamp do último evento processado',
+      ['aggregate_type'],
+    );
+  }
+
+  private registerTransactionMetrics(): void {
+    this.createCounter(
+      'transactions_total',
+      'Total de transações processadas',
+      ['type', 'status'],
+    );
+
+    this.createHistogram(
+      'transaction_amount_distribution',
+      'Distribuição dos valores das transações',
+      ['type'],
+      {
+        buckets: [10, 50, 100, 500, 1000, 5000, 10000],
+      },
+    );
+
+    this.createGauge(
+      'transactions_in_progress',
+      'Número de transações em processamento',
+      ['type'],
+    );
+  }
+
+  private registerAccountMetrics(): void {
+    this.createGauge('active_accounts', 'Número de contas ativas', ['status']);
+
+    this.createHistogram(
+      'account_balance_distribution',
+      'Distribuição dos saldos das contas',
+      ['account_type'],
+      {
+        buckets: [0, 100, 500, 1000, 5000, 10000, 50000],
+      },
+    );
+
+    this.createCounter(
+      'account_operations_total',
+      'Total de operações em contas',
+      ['operation_type', 'status'],
     );
   }
 

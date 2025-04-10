@@ -43,8 +43,13 @@ data:
         Match           *
         Host            loki.monitoring.svc.cluster.local
         Port            3100
+        Tenant_ID       cqrs-es-poc
         Auto_Kubernetes_Labels On
-        Labels          job=fluentbit
-        Label_Keys      $kubernetes['container_name'],$kubernetes['pod_name'],$kubernetes['namespace_name']
+        Labels          job=fluentbit,cluster=cqrs-es-poc
+        Label_Keys      $kubernetes['namespace_name'],$kubernetes['pod_name'],$kubernetes['container_name'],$kubernetes['labels']['app']
         Remove_Keys     $kubernetes['container_hash'],$kubernetes['docker_id'],$kubernetes['pod_id']
         Line_Format     json
+        LogLevel        info
+        Retry_Limit     5
+        HTTP_User       ${LOKI_USERNAME}
+        HTTP_Passwd     ${LOKI_PASSWORD}
