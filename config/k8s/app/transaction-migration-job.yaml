@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: transaction-migration-job
+  namespace: app
+spec:
+  ttlSecondsAfterFinished: 100
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: transaction-migration
+          image: postgres:14
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Executando migração da tabela de transações..."
+              PGPASSWORD=${POSTGRES_PASSWORD} psql -h ${POSTGRES_HOST} -U ${POSTGRES_USER} -d ${POSTGRES_DB} << 'EOSQL'
+              -- Registrar migração
+              INSERT INTO "typeorm_migrations" ("timestamp", "name") 
+              VALUES (1744268727220, 'AlterTransactionTable1744268727220')
+              ON CONFLICT DO NOTHING;
+
+              -- Verificar se a coluna "accountId" existe
+              DO $$
+              BEGIN
+                IF EXISTS (
+                  SELECT FROM information_schema.columns 
+                  WHERE table_name = 'transactions' AND column_name = 'accountId'
+                ) THEN
+                  -- 1. Renomear accountId para sourceAccountId
+                  ALTER TABLE "transactions" RENAME COLUMN "accountId" TO "sourceAccountId";
+                  
+                  -- 2. Renomear targetAccountId para destinationAccountId
+                  ALTER TABLE "transactions" RENAME COLUMN "targetAccountId" TO "destinationAccountId";
+                  
+                  -- 3. Adicionar os campos faltantes
+                  ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "processedAt" TIMESTAMP;
+                  ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "error" TEXT;
+                  
+                  -- 4. Remover coluna "notificationSent" se existir
+                  IF EXISTS (
+                    SELECT FROM information_schema.columns 
+                    WHERE table_name = 'transactions' AND column_name = 'notificationSent'
+                  ) THEN
+                    ALTER TABLE "transactions" DROP COLUMN "notificationSent";
+                  END IF;
+                  
+                  -- 5. Atualizar constraints
+                  ALTER TABLE "transactions" DROP CONSTRAINT IF EXISTS "FK_transactions_accounts";
+                  ALTER TABLE "transactions" DROP CONSTRAINT IF EXISTS "FK_transactions_target_accounts";
+                  
+                  ALTER TABLE "transactions" 
+                  ADD CONSTRAINT "FK_transactions_source_accounts" 
+                  FOREIGN KEY ("sourceAccountId") REFERENCES "accounts"("id") ON DELETE CASCADE;
+                  
+                  ALTER TABLE "transactions" 
+                  ADD CONSTRAINT "FK_transactions_destination_accounts" 
+                  FOREIGN KEY ("destinationAccountId") REFERENCES "accounts"("id") ON DELETE SET NULL;
+                  
+                  -- 6. Atualizar índices
+                  DROP INDEX IF EXISTS "IDX_transactions_accountId";
+                  DROP INDEX IF EXISTS "IDX_transactions_targetAccountId";
+                  CREATE INDEX IF NOT EXISTS "IDX_transactions_sourceAccountId" ON "transactions" ("sourceAccountId");
+                  CREATE INDEX IF NOT EXISTS "IDX_transactions_destinationAccountId" ON "transactions" ("destinationAccountId");
+                  
+                  RAISE NOTICE 'Migração da tabela de transações executada com sucesso!';
+                ELSE
+                  RAISE NOTICE 'A tabela de transações já está no formato correto.';
+                END IF;
+              END $$;
+              EOSQL
+              echo "Migração da tabela de transações concluída!"
+          envFrom:
+            - configMapRef:
+                name: app-config

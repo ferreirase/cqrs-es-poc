@@ -1,0 +1,136 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration-job
+  namespace: app
+spec:
+  ttlSecondsAfterFinished: 100
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-migration
+          image: postgres:14
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Executando migrations SQL..."
+              PGPASSWORD=${POSTGRES_PASSWORD} psql -h ${POSTGRES_HOST} -U ${POSTGRES_USER} -d ${POSTGRES_DB} << 'EOSQL'
+              CREATE TABLE IF NOT EXISTS "users" (
+                "id" uuid NOT NULL,
+                "name" character varying NOT NULL,
+                "document" character varying NOT NULL,
+                "email" character varying NOT NULL,
+                "createdAt" TIMESTAMP NOT NULL,
+                "updatedAt" TIMESTAMP,
+                CONSTRAINT "PK_users" PRIMARY KEY ("id")
+              );
+
+              CREATE TABLE IF NOT EXISTS "accounts" (
+                "id" uuid NOT NULL,
+                "owner_id" uuid NOT NULL,
+                "balance" decimal(10,2) NOT NULL DEFAULT '0.00',
+                "createdAt" TIMESTAMP NOT NULL,
+                "updatedAt" TIMESTAMP,
+                CONSTRAINT "PK_accounts" PRIMARY KEY ("id"),
+                CONSTRAINT "unique_owner" UNIQUE ("owner_id"),
+                CONSTRAINT "FK_accounts_owner" FOREIGN KEY ("owner_id") REFERENCES "users"("id") ON DELETE CASCADE
+              );
+
+              CREATE TABLE IF NOT EXISTS "transactions" (
+                "id" uuid NOT NULL,
+                "amount" decimal(10,2) NOT NULL,
+                "type" character varying NOT NULL,
+                "description" character varying NOT NULL,
+                "sourceAccountId" uuid NOT NULL,
+                "createdAt" TIMESTAMP NOT NULL,
+                "updatedAt" TIMESTAMP,
+                "status" character varying NOT NULL,
+                "destinationAccountId" uuid,
+                "processedAt" TIMESTAMP,
+                "error" text,
+                CONSTRAINT "PK_transactions" PRIMARY KEY ("id"),
+                CONSTRAINT "FK_transactions_source_accounts" FOREIGN KEY ("sourceAccountId") REFERENCES "accounts"("id") ON DELETE CASCADE,
+                CONSTRAINT "FK_transactions_destination_accounts" FOREIGN KEY ("destinationAccountId") REFERENCES "accounts"("id") ON DELETE SET NULL
+              );
+
+              CREATE TABLE IF NOT EXISTS "events" (
+                "id" character varying NOT NULL,
+                "type" character varying NOT NULL,
+                "timestamp" TIMESTAMP NOT NULL,
+                "data" text NOT NULL,
+                "aggregateId" character varying NOT NULL,
+                CONSTRAINT "PK_events" PRIMARY KEY ("id")
+              );
+
+              CREATE INDEX IF NOT EXISTS "IDX_accounts_owner_id" ON "accounts" ("owner_id");
+              CREATE INDEX IF NOT EXISTS "IDX_transactions_sourceAccountId" ON "transactions" ("sourceAccountId");
+              CREATE INDEX IF NOT EXISTS "IDX_transactions_destinationAccountId" ON "transactions" ("destinationAccountId");
+              CREATE INDEX IF NOT EXISTS "IDX_events_aggregateId" ON "events" ("aggregateId");
+              CREATE INDEX IF NOT EXISTS "IDX_events_type" ON "events" ("type");
+
+              CREATE TABLE IF NOT EXISTS "typeorm_migrations" (
+                "id" SERIAL PRIMARY KEY,
+                "timestamp" bigint NOT NULL,
+                "name" character varying NOT NULL
+              );
+
+              INSERT INTO "typeorm_migrations" ("timestamp", "name") 
+              VALUES (1744264983239, 'CreateInitialSchema1744264983239')
+              ON CONFLICT DO NOTHING;
+
+              INSERT INTO "typeorm_migrations" ("timestamp", "name") 
+              VALUES (1744268727220, 'AlterTransactionTable1744268727220')
+              ON CONFLICT DO NOTHING;
+
+              -- Atualizar tabela de transações existente (caso as tabelas já existam)
+              DO $$
+              BEGIN
+                -- Verificar se a coluna "accountId" existe
+                IF EXISTS (
+                  SELECT FROM information_schema.columns 
+                  WHERE table_name = 'transactions' AND column_name = 'accountId'
+                ) THEN
+                  -- 1. Renomear accountId para sourceAccountId
+                  ALTER TABLE "transactions" RENAME COLUMN "accountId" TO "sourceAccountId";
+                  
+                  -- 2. Renomear targetAccountId para destinationAccountId
+                  ALTER TABLE "transactions" RENAME COLUMN "targetAccountId" TO "destinationAccountId";
+                  
+                  -- 3. Adicionar os campos faltantes
+                  ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "processedAt" TIMESTAMP;
+                  ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "error" TEXT;
+                  
+                  -- 4. Remover coluna "notificationSent" se existir
+                  IF EXISTS (
+                    SELECT FROM information_schema.columns 
+                    WHERE table_name = 'transactions' AND column_name = 'notificationSent'
+                  ) THEN
+                    ALTER TABLE "transactions" DROP COLUMN "notificationSent";
+                  END IF;
+                  
+                  -- 5. Atualizar constraints
+                  ALTER TABLE "transactions" DROP CONSTRAINT IF EXISTS "FK_transactions_accounts";
+                  ALTER TABLE "transactions" DROP CONSTRAINT IF EXISTS "FK_transactions_target_accounts";
+                  
+                  ALTER TABLE "transactions" 
+                  ADD CONSTRAINT "FK_transactions_source_accounts" 
+                  FOREIGN KEY ("sourceAccountId") REFERENCES "accounts"("id") ON DELETE CASCADE;
+                  
+                  ALTER TABLE "transactions" 
+                  ADD CONSTRAINT "FK_transactions_destination_accounts" 
+                  FOREIGN KEY ("destinationAccountId") REFERENCES "accounts"("id") ON DELETE SET NULL;
+                  
+                  -- 6. Atualizar índices
+                  DROP INDEX IF EXISTS "IDX_transactions_accountId";
+                  DROP INDEX IF EXISTS "IDX_transactions_targetAccountId";
+                  CREATE INDEX IF NOT EXISTS "IDX_transactions_sourceAccountId" ON "transactions" ("sourceAccountId");
+                  CREATE INDEX IF NOT EXISTS "IDX_transactions_destinationAccountId" ON "transactions" ("destinationAccountId");
+                END IF;
+              END $$;
+              EOSQL
+              echo "Migrations SQL concluídas com sucesso!"
+          envFrom:
+            - configMapRef:
+                name: app-config

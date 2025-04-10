@@ -3,6 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cqrs-app-deployment
+  namespace: app
 spec:
   replicas: 2 # Iniciar com 2 réplicas
   selector:
@@ -13,10 +14,11 @@ spec:
       labels:
         app: cqrs-app
     spec:
+      # Remover initContainer por enquanto para o app iniciar corretamente
       containers:
         - name: cqrs-app-container
           # Substitua pela sua imagem Docker correta
-          image: ferreirase/cqrs-app
+          image: ferreirase/cqrs-app:latest # Substitua pela sua imagem real
           imagePullPolicy: Always # Garante que k8s puxe a imagem mais recente
           ports:
             - containerPort: 3001 # Porta que a app escuta (deve bater com PORT no ConfigMap e EXPOSE no Dockerfile)
@@ -28,21 +30,21 @@ spec:
           # Opcional: Readiness/Liveness Probes para verificar saúde da aplicação
           readinessProbe:
             httpGet:
-              path: /api/health # Assumindo que você tem um endpoint de health check em /api/health
+              path: /api/health
               port: 3001
             initialDelaySeconds: 15
-            periodSeconds: 20
+            periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /api/health # Assumindo endpoint de health check
+              path: /api/health
               port: 3001
             initialDelaySeconds: 60
             periodSeconds: 30
           # Opcional: Limites de recursos
           resources:
             requests:
-              memory: '256Mi'
-              cpu: '250m'
+              memory: '1024Mi'
+              cpu: '1000m'
             limits:
-              memory: '512Mi'
-              cpu: '500m'
+              memory: '2048Mi'
+              cpu: '2000m'

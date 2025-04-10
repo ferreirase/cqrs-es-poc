@@ -50,68 +50,79 @@ export class WorkerThreadService implements OnModuleInit {
   private createWorker(id: number): Worker {
     const workerPath = path.resolve(__dirname, 'message-worker.js');
 
-    const worker = new Worker(workerPath, {
-      workerData: { id },
-    } as WorkerOptions);
+    // Logs para debug
+    this.logger.log(`Worker path: ${workerPath}`);
+    this.logger.log(`Current directory: ${__dirname}`);
 
-    worker.on('message', message => {
-      if (message.type === 'result') {
-        // Worker concluiu uma tarefa
-        this.workerBusy.set(id, false);
+    try {
+      const worker = new Worker(workerPath, {
+        workerData: { id },
+      } as WorkerOptions);
 
-        // Atualizar estatísticas
-        const queue = message.queue || 'unknown';
-        if (!this.queueStats.has(queue)) {
-          this.queueStats.set(queue, { total: 0, processed: 0, errors: 0 });
-        }
-
-        const stats = this.queueStats.get(queue);
-        if (message.success) {
-          stats.processed++;
-        } else {
-          stats.errors++;
-        }
-
-        // Verificar se há mais tarefas para este worker
-        this.assignTasksToWorker(id, worker);
-      } else if (message.type === 'ready') {
-        this.logger.log(`Worker ${id} ready`);
-        // Worker está pronto para receber tarefas
-        this.assignTasksToWorker(id, worker);
-      } else if (message.type === 'error') {
-        this.logger.error(`Worker ${id} error: ${message.error}`);
-        // Recuperar worker em caso de erro
-        this.workerBusy.set(id, false);
-      }
-    });
-
-    worker.on('error', error => {
-      this.logger.error(`Worker ${id} encountered an error: ${error.message}`);
-      // Recriar worker em caso de erro fatal
-      this.workerBusy.delete(id);
-      this.workers = this.workers.filter(w => w !== worker);
-
-      setTimeout(() => {
-        try {
-          const newWorker = this.createWorker(id);
-          this.workers.push(newWorker);
+      worker.on('message', message => {
+        if (message.type === 'result') {
+          // Worker concluiu uma tarefa
           this.workerBusy.set(id, false);
-          this.logger.log(`Worker ${id} restarted successfully`);
-        } catch (restartError) {
-          this.logger.error(
-            `Failed to restart worker ${id}: ${restartError.message}`,
-          );
+
+          // Atualizar estatísticas
+          const queue = message.queue || 'unknown';
+          if (!this.queueStats.has(queue)) {
+            this.queueStats.set(queue, { total: 0, processed: 0, errors: 0 });
+          }
+
+          const stats = this.queueStats.get(queue);
+          if (message.success) {
+            stats.processed++;
+          } else {
+            stats.errors++;
+          }
+
+          // Verificar se há mais tarefas para este worker
+          this.assignTasksToWorker(id, worker);
+        } else if (message.type === 'ready') {
+          this.logger.log(`Worker ${id} ready`);
+          // Worker está pronto para receber tarefas
+          this.assignTasksToWorker(id, worker);
+        } else if (message.type === 'error') {
+          this.logger.error(`Worker ${id} error: ${message.error}`);
+          // Recuperar worker em caso de erro
+          this.workerBusy.set(id, false);
         }
-      }, 1000);
-    });
+      });
 
-    worker.on('exit', code => {
-      if (code !== 0) {
-        this.logger.warn(`Worker ${id} exited with code ${code}`);
-      }
-    });
+      worker.on('error', error => {
+        this.logger.error(
+          `Worker ${id} encountered an error: ${error.message}`,
+        );
+        // Recriar worker em caso de erro fatal
+        this.workerBusy.delete(id);
+        this.workers = this.workers.filter(w => w !== worker);
 
-    return worker;
+        setTimeout(() => {
+          try {
+            const newWorker = this.createWorker(id);
+            this.workers.push(newWorker);
+            this.workerBusy.set(id, false);
+            this.logger.log(`Worker ${id} restarted successfully`);
+          } catch (restartError) {
+            this.logger.error(
+              `Failed to restart worker ${id}: ${restartError.message}`,
+            );
+          }
+        }, 1000);
+      });
+
+      worker.on('exit', code => {
+        if (code !== 0) {
+          this.logger.warn(`Worker ${id} exited with code ${code}`);
+        }
+      });
+
+      return worker;
+    } catch (error) {
+      this.logger.error(`Failed to create worker ${id}: ${error.message}`);
+      throw error;
+    }
   }
 
   /**

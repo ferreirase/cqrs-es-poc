@@ -5,6 +5,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
+import { AppController } from './app.controller';
 import { EventEntity } from './common/events/event.entity';
 import { EventsModule } from './common/events/events.module';
 import { RabbitMQModule } from './common/messaging/rabbitmq.module';
@@ -65,5 +66,6 @@ import {
     MonitoringModule,
   ],
   providers: [RabbitMQService],
+  controllers: [AppController],
 })
 export class AppModule {}
