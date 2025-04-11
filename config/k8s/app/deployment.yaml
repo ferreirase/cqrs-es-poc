@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: transaction-service
-          image: ferreirase/cqrs-app:latest
+          image: ferreirase/cqrs:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
