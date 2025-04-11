@@ -84,12 +84,12 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "sum(app_commands_total)",
+          "expr": "sum(app_commands_total{job=\"transaction-service\"})",
           "legendFormat": "Comandos",
           "refId": "A"
         },
         {
-          "expr": "sum(app_queries_total)",
+          "expr": "sum(app_queries_total{job=\"transaction-service\"})",
           "legendFormat": "Consultas",
           "refId": "B"
         }
@@ -150,7 +150,7 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "app_cpu_usage_percent{process=\"main\"}",
+          "expr": "app_cpu_usage_percent{job=\"transaction-service\", process=\"main\"}",
           "legendFormat": "CPU",
           "refId": "A"
         }
@@ -211,7 +211,7 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "app_system_memory_usage_percent",
+          "expr": "app_system_memory_usage_percent{job=\"transaction-service\"}",
           "legendFormat": "Memória",
           "refId": "A"
         }
@@ -264,12 +264,12 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "rate(app_network_traffic_bytes{direction=\"received\"}[1m])",
+          "expr": "rate(app_network_traffic_bytes{job=\"transaction-service\", direction=\"received\"}[1m])",
           "legendFormat": "Recebidos/s",
           "refId": "A"
         },
         {
-          "expr": "rate(app_network_traffic_bytes{direction=\"sent\"}[1m])",
+          "expr": "rate(app_network_traffic_bytes{job=\"transaction-service\", direction=\"sent\"}[1m])",
           "legendFormat": "Enviados/s",
           "refId": "B"
         }
@@ -367,7 +367,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(app_commands_total[30s])) by (command, status)",
+          "expr": "sum(rate(app_commands_total{job=\"transaction-service\"}[30s])) by (command, status)",
           "legendFormat": "{{command}} ({{status}})",
           "range": true,
           "refId": "A"
@@ -453,7 +453,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(app_command_duration_seconds_sum[30s]) / rate(app_command_duration_seconds_count[5m])",
+          "expr": "rate(app_command_duration_seconds_sum{job=\"transaction-service\"}[30s]) / rate(app_command_duration_seconds_count{job=\"transaction-service\"}[5m])",
           "legendFormat": "{{command}}",
           "range": true,
           "refId": "A"
@@ -507,7 +507,7 @@
         {
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{app=\"cqrs-es-poc\"} | json | handlerType=\"command\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
+          "expr": "{kubernetes_namespace_name=\"app\"} | json | handlerType=\"command\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -623,7 +623,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(app_queries_total[30s])) by (query, status)",
+          "expr": "sum(rate(app_queries_total{job=\"transaction-service\"}[30s])) by (query, status)",
           "legendFormat": "{{query}} ({{status}})",
           "range": true,
           "refId": "A"
@@ -709,7 +709,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(app_query_duration_seconds_sum[30s]) / rate(app_query_duration_seconds_count[5m])",
+          "expr": "rate(app_query_duration_seconds_sum{job=\"transaction-service\"}[30s]) / rate(app_query_duration_seconds_count{job=\"transaction-service\"}[5m])",
           "legendFormat": "{{query}}",
           "range": true,
           "refId": "A"
@@ -763,7 +763,7 @@
         {
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{app=\"cqrs-es-poc\"} | json | handlerType=\"query\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
+          "expr": "{kubernetes_namespace_name=\"app\"} | json | handlerType=\"query\" | line_format \"{{.handlerName}} - Args: {{.args}} - Duration: {{.duration}}s - Success: {{.success}}\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -886,7 +886,7 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "app_cpu_usage_percent{process=\"main\"}",
+          "expr": "app_cpu_usage_percent{job=\"transaction-service\", process=\"main\"}",
           "legendFormat": "Processo Principal",
           "refId": "A"
         },
@@ -976,12 +976,12 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "app_memory_usage_bytes{process=\"main\",type=\"heapUsed\"}",
+          "expr": "app_memory_usage_bytes{job=\"transaction-service\", process=\"main\",type=\"heapUsed\"}",
           "legendFormat": "Heap Usado",
           "refId": "A"
         },
         {
-          "expr": "app_memory_usage_bytes{process=\"main\",type=\"rss\"}",
+          "expr": "app_memory_usage_bytes{job=\"transaction-service\", process=\"main\",type=\"rss\"}",
           "legendFormat": "RSS",
           "refId": "B"
         }
@@ -1065,12 +1065,12 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "rate(app_network_traffic_bytes{direction=\"received\"}[5m])",
+          "expr": "rate(app_network_traffic_bytes{job=\"transaction-service\", direction=\"received\"}[5m])",
           "legendFormat": "Recebidos",
           "refId": "A"
         },
         {
-          "expr": "rate(app_network_traffic_bytes{direction=\"sent\"}[5m])",
+          "expr": "rate(app_network_traffic_bytes{job=\"transaction-service\", direction=\"sent\"}[5m])",
           "legendFormat": "Enviados",
           "refId": "B"
         }
@@ -1121,7 +1121,7 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "{app=\"cqrs-es-poc\"} | json | type=\"system_metrics\"",
+          "expr": "{kubernetes_namespace_name=\"app\"} | json | type=\"system_metrics\"",
           "refId": "A"
         }
       ],
@@ -1154,5 +1154,6 @@
   "timezone": "",
   "title": "CQRS-ES Application Dashboard",
   "uid": "eeif09p72ptkwd",
-  "version": 1
+  "version": 2,
+  "weekStart": ""
 }
