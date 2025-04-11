@@ -36,7 +36,11 @@ export class LoggingService {
           ),
         }),
         new LokiTransport({
-          host: process.env.LOKI_HOST,
+          host:
+            process.env.LOKI_URL ||
+            `http://${process.env.LOKI_HOST || 'localhost'}:${
+              process.env.LOKI_PORT || 3100
+            }`,
           labels: {
             app: 'cqrs-es-poc',
             service: 'transaction-service',

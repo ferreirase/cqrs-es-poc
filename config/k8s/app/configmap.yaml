@@ -21,6 +21,7 @@ data:
   RABBITMQ_PORT: '5672'
   RABBITMQ_USER: 'admin'
   # Loki Config
+  LOKI_URL: 'http://loki.monitoring.svc.cluster.local:3100'
   LOKI_HOST: 'loki.monitoring.svc.cluster.local'
   LOKI_PORT: '3100'
   LOKI_USERNAME: 'admin'

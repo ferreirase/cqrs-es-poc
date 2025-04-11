@@ -65,12 +65,6 @@ data:
         Labels          job=fluentbit, cluster=cqrs-es-poc
         Label_Keys      $kubernetes['namespace_name'],$kubernetes['pod_name'],$kubernetes['container_name']
         Line_Format     json
-        Retry_Limit     5
-        Retry_Wait      1s
-        Timeout         5s
-        Batch_Size      1024
-        Batch_Wait      1s
-        Drop_Single_Key On
         Auto_Kubernetes_Labels On
 
     [OUTPUT]
@@ -79,15 +73,15 @@ data:
         Format      json
   parsers.conf: |
     [PARSER]
-    Name        docker
-    Format      json
-    Time_Key    time
-    Time_Format %Y-%m-%dT%H:%M:%S.%L
-    Time_Keep   On
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
 
     [PARSER]
-    Name        cqrs_json
-    Format      json
-    Time_Key    time
-    Time_Format %Y-%m-%dT%H:%M:%S.%L
-    Time_Keep   On
+        Name        cqrs_json
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
