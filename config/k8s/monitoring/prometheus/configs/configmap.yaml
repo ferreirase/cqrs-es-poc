@@ -16,17 +16,11 @@ data:
 
       - job_name: 'transaction-service'
         metrics_path: '/api/metrics'
-        kubernetes_sd_configs:
-          - role: endpoints
-            namespaces:
-              names:
-                - app
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_service_name]
-            regex: 'transaction-service'
-            action: keep
+        static_configs:
+          - targets: ['transaction-service.app.svc.cluster.local:3001']
 
       - job_name: 'fluentbit'
+        metrics_path: '/api/v1/metrics/prometheus'
         kubernetes_sd_configs:
           - role: endpoints
             namespaces:
@@ -39,7 +33,8 @@ data:
           - source_labels: [__meta_kubernetes_pod_container_port_name]
             regex: 'metrics'
             action: keep
-          - source_labels: [__address__]
-            target_label: __address__
-            regex: (.+)
-            replacement: $1:2020
+
+      - job_name: 'loki'
+        metrics_path: '/metrics'
+        static_configs:
+          - targets: ['loki.monitoring.svc.cluster.local:3100']

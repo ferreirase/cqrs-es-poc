@@ -25,5 +25,3 @@ data:
   LOKI_HOST: ''
   LOKI_PORT: '3100'
   LOKI_USERNAME: 'admin'
-  # Desativar Loki temporariamente
-  DISABLE_LOKI: 'true'
