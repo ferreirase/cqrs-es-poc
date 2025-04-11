@@ -12,6 +12,71 @@ export class LoggingService {
   constructor() {
     const host =
       process.env.NODE_ENV === 'production' ? 'fluentbit' : 'localhost';
+
+    // Configurar os transportes
+    const transports = [
+      new winston.transports.Console({
+        format: winston.format.combine(
+          winston.format.colorize(),
+          winston.format.timestamp(),
+          winston.format.printf(({ timestamp, level, message, ...meta }) => {
+            return `${timestamp} [${level}]: ${message} ${
+              Object.keys(meta).length ? JSON.stringify(meta) : ''
+            }`;
+          }),
+        ),
+      }),
+      // FluentBit transport over TCP
+      new winston.transports.Http({
+        host: host,
+        port: 24224,
+        path: '/',
+        ssl: false,
+        format: winston.format.json(),
+      }),
+    ];
+
+    // Adicionar o Loki Transport somente se não estiver desativado
+    if (process.env.DISABLE_LOKI !== 'true') {
+      try {
+        transports.push(
+          new LokiTransport({
+            host:
+              process.env.LOKI_URL ||
+              `http://${process.env.LOKI_HOST || 'localhost'}:${
+                process.env.LOKI_PORT || 3100
+              }`,
+            labels: {
+              app: 'cqrs-es-poc',
+              service: 'transaction-service',
+              environment: process.env.NODE_ENV || 'development',
+            },
+            json: true,
+            format: winston.format.json(),
+            replaceTimestamp: true,
+            batching: true,
+            interval: 5,
+            onConnectionError: err =>
+              console.error('Loki connection error:', err),
+            timeout: 5000,
+            basicAuth: process.env.LOKI_AUTH
+              ? {
+                  username: process.env.LOKI_USERNAME || 'admin',
+                  password: process.env.LOKI_PASSWORD || 'admin',
+                }
+              : undefined,
+          }),
+        );
+        console.log('Loki transport configurado com sucesso');
+      } catch (error) {
+        console.error('Erro ao configurar Loki transport:', error);
+      }
+    } else {
+      console.log(
+        'Loki transport desativado pela configuração DISABLE_LOKI=true',
+      );
+    }
+
     this.logger = winston.createLogger({
       level: 'info',
       format: winston.format.combine(
@@ -23,53 +88,7 @@ export class LoggingService {
         host: hostname(),
         environment: process.env.NODE_ENV || 'development',
       },
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.combine(
-            winston.format.colorize(),
-            winston.format.timestamp(),
-            winston.format.printf(({ timestamp, level, message, ...meta }) => {
-              return `${timestamp} [${level}]: ${message} ${
-                Object.keys(meta).length ? JSON.stringify(meta) : ''
-              }`;
-            }),
-          ),
-        }),
-        new LokiTransport({
-          host:
-            process.env.LOKI_URL ||
-            `http://${process.env.LOKI_HOST || 'localhost'}:${
-              process.env.LOKI_PORT || 3100
-            }`,
-          labels: {
-            app: 'cqrs-es-poc',
-            service: 'transaction-service',
-            environment: process.env.NODE_ENV || 'development',
-          },
-          json: true,
-          format: winston.format.json(),
-          replaceTimestamp: true,
-          batching: true,
-          interval: 5,
-          onConnectionError: err =>
-            console.error('Loki connection error:', err),
-          timeout: 5000,
-          basicAuth: process.env.LOKI_AUTH
-            ? {
-                username: process.env.LOKI_USERNAME || 'admin',
-                password: process.env.LOKI_PASSWORD || 'admin',
-              }
-            : undefined,
-        }),
-        // FluentBit transport over TCP
-        new winston.transports.Http({
-          host: host,
-          port: 24224,
-          path: '/',
-          ssl: false,
-          format: winston.format.json(),
-        }),
-      ],
+      transports: transports,
     });
   }
 
