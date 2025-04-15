@@ -1,4 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Logger, Module, OnModuleInit } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -51,6 +51,8 @@ const AllAggregates = [TransactionAggregate];
 
 const AllRepositories = [TransactionAggregateRepository];
 
+const cluster = require('node:cluster'); // Importar cluster aqui também
+
 @Module({
   imports: [
     CqrsModule,
@@ -84,6 +86,8 @@ const AllRepositories = [TransactionAggregateRepository];
   ],
 })
 export class TransactionsModule implements OnModuleInit {
+  private readonly logger = new Logger(TransactionsModule.name);
+
   constructor(
     private readonly rabbitMQService: RabbitMQService,
     private readonly rabbitMQWorkerService: RabbitMQWorkerService,
@@ -96,66 +100,84 @@ export class TransactionsModule implements OnModuleInit {
   private readonly exchangeName = 'paymaker-exchange';
 
   async onModuleInit() {
-    try {
+    // Executar criação de filas apenas no processo primário
+    if (cluster.isPrimary) {
+      this.logger.log(
+        '[TransactionsModule] Primary process initializing RabbitMQ queues...',
+      );
       try {
-        await this.rabbitMQService.setPrefetchCount(2);
-        console.log(
-          '✅ RabbitMQ prefetch count configurado para 1 em todos os consumidores',
+        try {
+          await this.rabbitMQService.setPrefetchCount(2);
+          this.logger.log(
+            '✅ RabbitMQ prefetch count configurado para 1 em todos os consumidores',
+          );
+        } catch (error) {
+          this.logger.error(
+            '❌ Erro ao configurar RabbitMQ prefetch count:',
+            error,
+          );
+        }
+
+        // Lista de filas a serem criadas
+        const queuesToCreate = [
+          {
+            queue: 'withdrawal_commands_queue',
+            routingKey: 'commands.withdrawal',
+          },
+          {
+            queue: 'check_balance_commands_queue',
+            routingKey: 'commands.check_balance',
+          },
+          {
+            queue: 'reserve_balance_commands_queue',
+            routingKey: 'commands.reserve_balance',
+          },
+          {
+            queue: 'process_transaction_commands_queue',
+            routingKey: 'commands.process_transaction',
+          },
+          {
+            queue: 'confirm_transaction_commands_queue',
+            routingKey: 'commands.confirm_transaction',
+          },
+          {
+            queue: 'update_statement_commands_queue',
+            routingKey: 'commands.update_statement',
+          },
+          {
+            queue: 'notify_user_commands_queue',
+            routingKey: 'commands.notify_user',
+          },
+          {
+            queue: 'release_balance_commands_queue',
+            routingKey: 'commands.release_balance',
+          },
+        ];
+
+        for (const q of queuesToCreate) {
+          await this.rabbitMQService.createQueueAndBind(q.queue, q.routingKey, {
+            durable: true,
+            exchangeName: this.exchangeName,
+          });
+        }
+
+        this.logger.log(
+          '✅ Todas as filas RabbitMQ foram criadas e vinculadas com sucesso pelo processo primário!',
         );
+
+        // Manter o código comentado do setupThreadedConsumers aqui, pois não é mais usado
+        // await this.setupThreadedConsumers();
       } catch (error) {
-        console.error('❌ Erro ao configurar RabbitMQ prefetch count:', error);
+        this.logger.error(
+          '❌ Erro ao inicializar filas RabbitMQ no processo primário:',
+          error,
+        );
+        throw error;
       }
-
-      await this.rabbitMQService.createQueueAndBind(
-        'withdrawal_commands_queue',
-        'commands.withdrawal',
-        { durable: true, exchangeName: this.exchangeName },
+    } else {
+      this.logger.log(
+        `[TransactionsModule] Worker ${process.pid} skipping queue creation.`,
       );
-      await this.rabbitMQService.createQueueAndBind(
-        'check_balance_commands_queue',
-        'commands.check_balance',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'reserve_balance_commands_queue',
-        'commands.reserve_balance',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'process_transaction_commands_queue',
-        'commands.process_transaction',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'confirm_transaction_commands_queue',
-        'commands.confirm_transaction',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'update_statement_commands_queue',
-        'commands.update_statement',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'notify_user_commands_queue',
-        'commands.notify_user',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-      await this.rabbitMQService.createQueueAndBind(
-        'release_balance_commands_queue',
-        'commands.release_balance',
-        { durable: true, exchangeName: this.exchangeName },
-      );
-
-      console.log(
-        '✅ Todas as filas RabbitMQ foram criadas e vinculadas com sucesso!',
-      );
-
-      // Comentado para evitar conflito com @RabbitSubscribe
-      // await this.setupThreadedConsumers();
-    } catch (error) {
-      console.error('❌ Erro ao inicializar filas RabbitMQ:', error);
-      throw error;
     }
   }
 

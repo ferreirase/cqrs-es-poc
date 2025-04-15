@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
@@ -28,14 +27,6 @@ export class ConfirmTransactionHandler {
     private eventBus: EventBus,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange', // Ensure this matches your config
-    routingKey: 'commands.confirm_transaction',
-    queue: 'confirm_transaction_commands_queue', // Define a queue name
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleConfirmTransactionCommand(
     msg: string, // Manter como string por enquanto devido ao JSON.parse
   ): Promise<void> {

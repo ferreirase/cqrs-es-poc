@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
@@ -16,6 +15,7 @@ import {
 } from '../../models/notification.enum';
 import { TransactionEntity } from '../../models/transaction.entity';
 import { TransactionStatus } from '../../models/transaction.schema';
+import { TransactionContextService } from '../../services/transaction-context.service';
 
 interface NotifyUserMessage {
   commandName: 'NotifyUserCommand';
@@ -43,16 +43,9 @@ export class NotifyUserHandler {
     private userModel: Model<UserDocument>,
     private eventBus: EventBus,
     private loggingService: LoggingService,
+    private transactionContextService: TransactionContextService,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange',
-    routingKey: 'commands.notify_user',
-    queue: 'notify_user_commands_queue',
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleNotifyUserCommand(msg: any): Promise<void> {
     const handlerName = 'NotifyUserHandler';
     const startTime = Date.now();

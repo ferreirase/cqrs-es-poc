@@ -151,19 +151,17 @@ export class RabbitMQService implements OnModuleInit {
 
   /**
    * Subscribe to a queue and process messages
-   * @param queue The queue name
-   * @param handler The function to process messages
-   * @param prefetchCount Number of messages to prefetch (default: 1)
+   * NOTE: This default implementation handles ack/nack internally.
+   * For the orchestrator pattern, the handler passed should NOT ack/nack.
    */
   async subscribe<T>(
     queue: string,
     handler: (message: T, originalMessage: ConsumeMessage) => Promise<void>,
-    prefetchCount: number = 2,
+    prefetchCount: number = 1, // Default prefetch 1 para orquestrador
+    autoAck: boolean = true, // Flag para controlar ack/nack automático
   ): Promise<void> {
     try {
       await this.amqpConnection.channel.assertQueue(queue, { durable: true });
-
-      // Aplicar prefetch count específico para esta fila se especificado
       await this.setPrefetchCount(prefetchCount);
       this.logger.debug(
         `Set prefetch count to ${prefetchCount} for queue: ${queue}`,
@@ -171,31 +169,85 @@ export class RabbitMQService implements OnModuleInit {
 
       await this.amqpConnection.channel.consume(
         queue,
-        async (msg: any) => {
+        async (msg: ConsumeMessage | null) => {
           if (!msg) return;
 
           try {
             const content = JSON.parse(msg.content.toString()) as T;
-            await handler(content, msg);
-            this.amqpConnection.channel.ack(msg);
+            await handler(content, msg); // Passar o originalMessage para o handler
+            if (autoAck) {
+              this.ack(msg); // Ack automático se autoAck for true
+            }
           } catch (error) {
             this.logger.error(
-              `Error processing message from queue ${queue}`,
-              error.message,
+              `Error processing message from queue ${queue}: ${error.message}`,
+              error.stack,
             );
-            this.amqpConnection.channel.nack(msg, false, false);
+            if (autoAck) {
+              this.nack(msg, false, false); // Nack automático (sem requeue) se autoAck for true
+            }
+            // Se autoAck for false, o handler é responsável pelo ack/nack
+            // A rejeição da promessa do handler pode ser usada para NACK pelo chamador (orquestrador)
+            else {
+              throw error; // Re-lançar o erro para o chamador (orquestrador) lidar com NACK
+            }
           }
         },
-        { noAck: false },
+        { noAck: false }, // Sempre usar ack manual (noAck: false)
       );
 
       this.logger.debug(`Subscribed to queue: ${queue}`);
     } catch (error) {
-      this.logger.error(`Error subscribing to queue ${queue}`, error.message);
+      this.logger.error(
+        `Error subscribing to queue ${queue}: ${error.message}`,
+      );
       throw new HttpException(
         `Error subscribing to queue ${queue}: ${error.message}`,
         500,
       );
+    }
+  }
+
+  /**
+   * Acknowledge a message.
+   * @param message The original message received from RabbitMQ.
+   */
+  public ack(message: ConsumeMessage): void {
+    try {
+      this.amqpConnection.channel.ack(message);
+      this.logger.verbose(
+        `Message ACKed: deliveryTag=${message.fields.deliveryTag}`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to ACK message: ${error.message}`, error.stack);
+      // O que fazer aqui? A mensagem pode ser reprocessada.
+      // Lançar erro pode parar o consumidor dependendo de como é chamado.
+      throw error; // Re-lançar para indicar falha no ack
+    }
+  }
+
+  /**
+   * Reject a message.
+   * @param message The original message received from RabbitMQ.
+   * @param allUpTo If true, reject all messages up to this one.
+   * @param requeue If true, the message will be requeued.
+   */
+  public nack(
+    message: ConsumeMessage,
+    allUpTo: boolean = false,
+    requeue: boolean = false,
+  ): void {
+    try {
+      this.amqpConnection.channel.nack(message, allUpTo, requeue);
+      this.logger.warn(
+        `Message NACKed: deliveryTag=${message.fields.deliveryTag}, requeue=${requeue}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to NACK message: ${error.message}`,
+        error.stack,
+      );
+      throw error; // Re-lançar para indicar falha no nack
     }
   }
 

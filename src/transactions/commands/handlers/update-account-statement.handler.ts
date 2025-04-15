@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { InjectModel } from '@nestjs/mongoose';
@@ -11,6 +10,7 @@ import { UserDocument } from '../../../users/models/user.schema';
 import { StatementUpdatedEvent } from '../../events/impl/statement-updated.event';
 import { TransactionEntity } from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
+import { TransactionContextService } from '../../services/transaction-context.service';
 
 interface UpdateStatementMessage {
   commandName: 'UpdateAccountStatementCommand';
@@ -36,16 +36,9 @@ export class UpdateAccountStatementHandler {
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
+    private transactionContextService: TransactionContextService,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange',
-    routingKey: 'commands.update_statement',
-    queue: 'update_statement_commands_queue',
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleUpdateStatementCommand(
     msg: UpdateStatementMessage,
   ): Promise<void> {

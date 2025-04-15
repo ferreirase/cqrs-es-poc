@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable } from '@nestjs/common';
 import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
@@ -28,14 +27,6 @@ export class WithdrawalHandler {
     private readonly transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange',
-    routingKey: 'commands.withdrawal',
-    queue: 'withdrawal_commands_queue',
-    queueOptions: {
-      durable: true,
-    },
-  })
   async consumeWithdrawalCommand(msg: string): Promise<void> {
     const handlerName = 'WithdrawalHandler';
     const startTime = Date.now();

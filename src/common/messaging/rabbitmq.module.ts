@@ -1,6 +1,7 @@
 import { RabbitMQModule as NestRabbitMQModule } from '@golevelup/nestjs-rabbitmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { RabbitMQOrchestratorService } from './rabbitmq-orchestrator.service';
 import { RabbitMQService } from './rabbitmq.service';
 
 @Module({
@@ -32,7 +33,7 @@ import { RabbitMQService } from './rabbitmq.service';
       }),
     }),
   ],
-  providers: [RabbitMQService],
-  exports: [RabbitMQService, NestRabbitMQModule],
+  providers: [RabbitMQService, RabbitMQOrchestratorService],
+  exports: [RabbitMQService, NestRabbitMQModule, RabbitMQOrchestratorService],
 })
 export class RabbitMQModule {}

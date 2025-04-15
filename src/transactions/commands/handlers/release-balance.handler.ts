@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -34,14 +33,6 @@ export class ReleaseBalanceHandler {
     private transactionAggregateRepository: TransactionAggregateRepository,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange', // Ensure this matches your config
-    routingKey: 'commands.release_balance',
-    queue: 'release_balance_commands_queue', // Define a queue name
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleReleaseBalanceCommand(msg: ReleaseBalanceMessage): Promise<void> {
     const handlerName = 'ReleaseBalanceHandler';
     const startTime = Date.now();

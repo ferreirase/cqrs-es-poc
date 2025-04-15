@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -12,6 +11,7 @@ import {
 } from '../../models/transaction.entity';
 import { TransactionStatus } from '../../models/transaction.schema';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
+import { TransactionContextService } from '../../services/transaction-context.service';
 
 // Define the expected message structure from RabbitMQ
 interface ProcessTransactionMessage {
@@ -32,16 +32,9 @@ export class ProcessTransactionHandler {
     private eventBus: EventBus,
     private loggingService: LoggingService,
     private transactionAggregateRepository: TransactionAggregateRepository,
+    private transactionContextService: TransactionContextService,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange', // Ensure this matches your config
-    routingKey: 'commands.process_transaction',
-    queue: 'process_transaction_commands_queue', // Define a queue name
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleProcessTransactionCommand(
     msg: ProcessTransactionMessage,
   ): Promise<void> {

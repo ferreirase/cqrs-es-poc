@@ -1,4 +1,3 @@
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventBus } from '@nestjs/cqrs';
 import { LoggingService } from '../../../common/monitoring/logging.service';
@@ -22,14 +21,6 @@ export class ReserveBalanceHandler {
     private eventBus: EventBus,
   ) {}
 
-  @RabbitSubscribe({
-    exchange: 'paymaker-exchange', // Ensure this matches your config
-    routingKey: 'commands.reserve_balance',
-    queue: 'reserve_balance_commands_queue', // Define a queue name
-    queueOptions: {
-      durable: true,
-    },
-  })
   async handleReserveBalanceCommand(msg: ReserveBalanceMessage): Promise<void> {
     const handlerName = 'ReserveBalanceHandler';
     const startTime = Date.now();
