@@ -3,20 +3,20 @@
   "version": "0.0.1",
   "description": "POC de Sistema de Gerenciamento de Transações com CQRS + Event Sourcing",
   "scripts": {
-    "build": "nest build && yarn copy-js-files",
+    "build": "nest build && yarn copy-files",
     "start": "nest start",
-    "start:dev": "cross-env NODE_ENV=development nest start --watch",
+    "start:dev": "cross-env NODE_ENV=development yarn build && nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/src/main.js",
     "docker:up": "docker compose up --build -d",
     "docker:down": "docker compose down --volumes",
-    "copy-js-files": "mkdir -p dist/common/workers dist/src/common/workers && cp -f src/common/workers/*.js dist/common/workers/ && cp -f src/common/workers/*.js dist/src/common/workers/ 2>/dev/null || echo 'No JS files copied, but continuing build'",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js",
     "typeorm:ds": "yarn typeorm --dataSource config/db/orm-config.ts",
     "migration:generate": "yarn typeorm:ds migration:generate",
     "migration:create": "yarn typeorm migration:create",
     "migration:run": "yarn typeorm:ds migration:run",
-    "migration:revert": "yarn typeorm:ds migration:revert"
+    "migration:revert": "yarn typeorm:ds migration:revert",
+    "copy-files": "cpx \"src/common/workers/**/*.js\" dist/src/common/workers"
   },
   "dependencies": {
     "@golevelup/nestjs-rabbitmq": "3.6.0",
@@ -54,6 +54,7 @@
     "@types/node": "^22.14.1",
     "@types/uuid": "^9.0.0",
     "axios": "^1.8.4",
+    "cpx": "^1.5.0",
     "source-map-support": "^0.5.21",
     "supabase": "^2.19.7",
     "ts-loader": "^9.3.1",

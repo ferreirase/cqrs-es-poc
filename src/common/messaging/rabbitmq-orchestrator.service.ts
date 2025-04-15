@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConsumeMessage } from 'amqplib';
-import * as cluster from 'node:cluster';
+import cluster, { Worker } from 'node:cluster';
 import { randomInt } from 'node:crypto';
 import { RabbitMQService } from '../messaging/rabbitmq.service';
 
@@ -64,12 +64,12 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
     // Adicione outros command handlers/queues aqui
   ];
 
-  private activeWorkers: cluster.Worker[] = [];
+  private activeWorkers: Worker[] = [];
   private pendingTasks = new Map<
     string,
     {
       msg: ConsumeMessage;
-      worker: cluster.Worker;
+      worker: Worker;
       resolve: (value: unknown) => void;
       reject: (reason?: any) => void;
     }
@@ -78,7 +78,7 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
   constructor(private readonly rabbitMQService: RabbitMQService) {}
 
   async onApplicationBootstrap() {
-    if (cluster.default.isPrimary) {
+    if (cluster.isPrimary) {
       this.logger.log('Primary process initializing RabbitMQ subscriptions...');
       await this.initializePrimaryProcess();
     } else {
@@ -148,7 +148,7 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
 
   private setupWorkerListeners() {
     // Garante que pegamos workers já existentes se o serviço iniciar depois
-    this.activeWorkers = Object.values(cluster.default.workers || {});
+    this.activeWorkers = Object.values(cluster.workers || {});
     this.activeWorkers.forEach(worker => {
       if (!worker.isConnected || worker.isDead()) {
         this.logger.warn(
@@ -160,13 +160,13 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
       }
     });
 
-    cluster.default.on('fork', worker => {
+    cluster.on('fork', worker => {
       this.logger.log(`Worker ${worker.process.pid} forked.`);
       this.activeWorkers.push(worker);
       this.setupMessageHandler(worker);
     });
 
-    cluster.default.on('exit', (worker, code, signal) => {
+    cluster.on('exit', (worker, code, signal) => {
       this.logger.warn(
         `Worker ${worker.process.pid} died. Code: ${code}, Signal: ${signal}.`,
       );
@@ -198,7 +198,7 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
       });
     });
 
-    cluster.default.on('disconnect', worker => {
+    cluster.on('disconnect', worker => {
       this.logger.warn(`Worker ${worker.process.pid} disconnected.`);
       // Tratar como 'exit' para remover e lidar com tasks pendentes?
       const disconnectedWorkerId = worker.id;
@@ -229,7 +229,7 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
     });
   }
 
-  private setupMessageHandler(worker: cluster.Worker) {
+  private setupMessageHandler(worker: Worker) {
     // Remover listener antigo para evitar duplicação se chamado múltiplas vezes
     worker.removeAllListeners('message');
     worker.removeAllListeners('error');

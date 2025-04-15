@@ -22,42 +22,35 @@ export const getRabbitMQUrl = (configService: ConfigService): string =>
 export const getNodeEnv = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV');
 
-const user = (configService: ConfigService): string =>
+const mongoUser = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV') === 'production'
     ? configService.get<string>('MONGO_USER')
     : 'admin';
 
-const pass = (configService: ConfigService): string =>
+const mongoPass = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV') === 'production'
     ? configService.get<string>('MONGO_PASSWORD')
-    : 'mongodb';
+    : 'admin';
 
-const host = (configService: ConfigService): string =>
+const mongoHost = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV') === 'production'
     ? configService.get<string>('MONGO_HOST')
     : 'localhost';
 
-const port = (configService: ConfigService): string =>
+const mongoPort = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV') === 'production'
     ? configService.get<string>('MONGO_PORT')
     : '27017';
 
-const db = (configService: ConfigService): string =>
+const mongoDb = (configService: ConfigService): string =>
   configService.get<string>('NODE_ENV') === 'production'
     ? configService.get<string>('MONGO_DB')
     : 'transaction_db';
 
-const authSource = (configService: ConfigService): string =>
-  configService.get<string>('NODE_ENV') === 'production'
-    ? configService.get<string>('MONGO_AUTH_SOURCE')
-    : 'admin';
-
 export const mongoUri = (configService: ConfigService): string =>
-  `mongodb://${user(configService)}:${pass(configService)}@${host(
+  `mongodb://${mongoUser(configService)}:${mongoPass(
     configService,
-  )}:${port(configService)}/${db(configService)}?authSource=${authSource(
-    configService,
-  )}`;
+  )}@${mongoHost(configService)}:${mongoPort(configService)}/`;
 
 // Postgres config
 export const getPostgresHost = (configService: ConfigService): string =>

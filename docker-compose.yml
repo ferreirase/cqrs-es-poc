@@ -17,6 +17,10 @@ services:
     image: mongo:latest
     ports:
       - '27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+      MONGO_INITDB_DATABASE: transaction_query_db
     volumes:
       - mongodb_data:/data/db
     restart: unless-stopped
@@ -84,6 +88,7 @@ services:
     volumes:
       - ./config/monitoring/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
       - ./logs:/var/log
+      - fluentbit_storage:/var/log/flb-storage
     environment:
       LOKI_HOST: loki
       LOKI_PORT: 3100
@@ -120,6 +125,7 @@ volumes:
   grafana_data:
   loki_data:
     driver: local
+  fluentbit_storage: {}
 
 networks:
   app-network:

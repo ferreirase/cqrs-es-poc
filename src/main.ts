@@ -4,11 +4,11 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import cluster from 'node:cluster';
 import { availableParallelism } from 'node:os';
-import * as process from 'node:process';
+import process from 'node:process';
 import { AppModule } from './app.module';
 import { RabbitMQOrchestratorService } from './common/messaging/rabbitmq-orchestrator.service';
-const cluster = require('node:cluster');
 
 // Interfaces para comunicação IPC
 interface TaskPayload {
