@@ -78,24 +78,51 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
   constructor(private readonly rabbitMQService: RabbitMQService) {}
 
   async onApplicationBootstrap() {
+    console.log('>>> [Orchestrator] Entering onApplicationBootstrap.'); // Log Simples
     if (cluster.isPrimary) {
-      this.logger.log('Primary process initializing RabbitMQ subscriptions...');
+      console.log('>>> [Orchestrator] Determined to be Primary process.'); // Log Simples
+      this.logger.log(
+        '[Orchestrator] Primary process initializing RabbitMQ subscriptions...',
+      );
       await this.initializePrimaryProcess();
     } else {
-      // Workers não inicializam subscriptions, apenas recebem tarefas via IPC
-      this.logger.log(`Worker ${process.pid} started, awaiting tasks via IPC.`);
+      console.log(
+        '>>> [Orchestrator] Determined to be Worker process. Skipping init.',
+      ); // Log Simples
+      this.logger.log(
+        `[Orchestrator] Worker ${process.pid} started, awaiting tasks via IPC.`,
+      );
     }
   }
 
   private async initializePrimaryProcess() {
+    console.log('>>> [Orchestrator] Entering initializePrimaryProcess.');
     this.setupWorkerListeners();
 
+    // Verificar status da conexão antes de subscrever
+    const connected = this.rabbitMQService.isConnected;
+    console.log(
+      `>>> [Orchestrator] RabbitMQ Connection Status Check: ${connected}`,
+    );
+    if (!connected) {
+      console.error(
+        '>>> [Orchestrator] CRITICAL: RabbitMQ is not connected! Cannot subscribe.',
+      );
+      // Poderia tentar reconectar ou sair, dependendo da estratégia
+      return;
+    }
+
+    console.log(
+      '>>> [Orchestrator] Starting subscription loop with REAL callback...',
+    );
     for (const q of this.commandQueues) {
+      console.log(
+        `>>> [Orchestrator] Preparing to subscribe to queue: ${q.queue} with REAL callback.`,
+      );
       try {
-        // A criação da fila ainda acontece no TransactionsModule onModuleInit (precisa garantir que só rode no primário)
-        // Vamos usar o subscribe com autoAck=false
         await this.rabbitMQService.subscribe<any>(
           q.queue,
+          // Restaurar o callback original que delega a tarefa
           (messageContent: any, originalMessage: ConsumeMessage) =>
             this.handleReceivedMessage(
               q.handlerKey,
@@ -104,16 +131,24 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
               originalMessage,
             ),
           1, // Prefetch 1
-          false, // autoAck = false -> Orquestrador controla ack/nack
+          false, // autoAck = false
         );
-        this.logger.log(`Primary subscribed to queue: ${q.queue}`);
+        this.logger.log(
+          `[Orchestrator] Primary subscribed to queue: ${q.queue} with REAL callback.`,
+        );
       } catch (error) {
         this.logger.error(
-          `Failed to subscribe to queue ${q.queue}: ${error.message}`,
+          `[Orchestrator] Failed to subscribe to queue ${q.queue}: ${error.message}`,
           error.stack,
         );
+        console.error(
+          `>>> [Orchestrator] ERROR subscribing to ${q.queue}: ${error.message}`,
+        ); // Log Simples
       }
     }
+    console.log(
+      '>>> [Orchestrator] Finished subscription loop with REAL callback.',
+    );
   }
 
   // Handler chamado pelo subscribe
@@ -123,6 +158,9 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
     messageContent: any,
     originalMessage: ConsumeMessage,
   ) {
+    console.log(
+      `>>> [Orchestrator] handleReceivedMessage called for queue ${queue}, handler ${handlerKey}.`,
+    );
     try {
       await this.delegateTaskToWorker(
         handlerKey,
@@ -130,17 +168,23 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
         messageContent,
         originalMessage,
       );
-      // Se delegateTaskToWorker resolver, a mensagem foi enviada ao worker e o ack/nack será tratado no callback do worker
-    } catch (delegationError) {
-      // Se delegateTaskToWorker rejeitar (ex: no workers ou erro interno), o nack deve ser feito aqui
-      this.logger.error(
-        `Failed to delegate task from queue ${queue}: ${delegationError.message}. NACKing message.`,
+      console.log(
+        `>>> [Orchestrator] delegateTaskToWorker promise resolved for queue ${queue}. Waiting for worker result.`,
       );
+      // Se a delegação for bem-sucedida, NÃO fazemos ack/nack aqui. Esperamos a resposta do worker.
+    } catch (delegationError) {
+      console.error(
+        `>>> [Orchestrator] delegateTaskToWorker promise REJECTED for queue ${queue}: ${delegationError.message}. NACKing.`,
+      );
+      this.logger.error(
+        `[Orchestrator] Failed to delegate task from queue ${queue}: ${delegationError.message}. NACKing message.`,
+      );
+      // NACK aqui apenas se a *delegação* (envio IPC ou encontrar worker) falhar
       try {
-        this.rabbitMQService.nack(originalMessage, false, false); // Nack sem requeue
+        this.rabbitMQService.nack(originalMessage, false, false);
       } catch (nackError) {
         this.logger.error(
-          `Failed to NACK message from ${queue} after delegation error: ${nackError.message}`,
+          `[Orchestrator] Failed to NACK message from ${queue} after delegation error: ${nackError.message}`,
         );
       }
     }
@@ -227,10 +271,12 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
         }
       });
     });
+
+    this.activeWorkers.forEach(worker => this.setupMessageHandler(worker));
   }
 
+  // Este handler recebe a resposta do worker e faz o ack/nack final
   private setupMessageHandler(worker: Worker) {
-    // Remover listener antigo para evitar duplicação se chamado múltiplas vezes
     worker.removeAllListeners('message');
     worker.removeAllListeners('error');
 
@@ -238,37 +284,39 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
       const task = this.pendingTasks.get(result.taskId);
       if (!task) {
         this.logger.warn(
-          `Received result for unknown, timed out, or already processed task ID: ${result.taskId}`,
+          `[Orchestrator] Received result for unknown/processed task ID: ${result.taskId}`,
         );
         return;
       }
 
-      this.logger.debug(
-        `Received result for task ${result.taskId} from worker ${worker.process.pid}: Success=${result.success}`,
+      // Logar resultado recebido
+      this.logger.log(
+        `[Orchestrator] Received result for task ${result.taskId} from worker ${worker.process.pid}:`,
+        result,
       );
 
       try {
         if (result.success) {
-          this.rabbitMQService.ack(task.msg); // Usar método público
+          this.logger.verbose(
+            `[Orchestrator] Task ${result.taskId} succeeded in worker. ACKing RabbitMQ message.`,
+          );
+          this.rabbitMQService.ack(task.msg);
           task.resolve(true);
-          this.logger.verbose(`Task ${result.taskId} ACKed successfully.`);
         } else {
           this.logger.error(
-            `Task ${result.taskId} failed in worker ${worker.process.pid}: ${result.error}. NACKing message.`,
+            `[Orchestrator] Task ${result.taskId} failed in worker: ${result.error}. NACKing RabbitMQ message (no requeue).`,
           );
-          this.rabbitMQService.nack(task.msg, false, false); // Usar método público, sem requeue
+          this.rabbitMQService.nack(task.msg, false, false); // NACK aqui, baseado no resultado do worker
           task.reject(new Error(result.error || 'Task failed in worker'));
         }
       } catch (amqpError) {
-        // Se ack/nack falhar aqui, a mensagem ficará pendente no broker e será reentregue após timeout
         this.logger.error(
-          `Error during ACK/NACK for task ${result.taskId} after worker response: ${amqpError.message}`,
+          `[Orchestrator] Error during ACK/NACK for task ${result.taskId} after worker response: ${amqpError.message}`,
           amqpError.stack,
         );
-        // Rejeitar a promessa original para sinalizar falha no processamento final
         task.reject(amqpError);
       } finally {
-        this.pendingTasks.delete(result.taskId); // Remover a tarefa da lista de pendentes
+        this.pendingTasks.delete(result.taskId);
       }
     });
 
@@ -287,76 +335,77 @@ export class RabbitMQOrchestratorService implements OnApplicationBootstrap {
     messageContent: any,
     originalMessage: ConsumeMessage,
   ): Promise<void> {
+    console.log(
+      `>>> [Orchestrator] Entering delegateTaskToWorker for queue ${queue}.`,
+    );
     return new Promise((resolve, reject) => {
       const availableWorkers = this.activeWorkers.filter(
         w => w.isConnected() && !w.isDead(),
       );
-
       if (availableWorkers.length === 0) {
-        this.logger.error(
-          'No active and connected workers available to delegate task.',
-        );
-        // Nack será feito no handleReceivedMessage que chamou esta função
+        console.error('>>> [Orchestrator] No active workers.');
         return reject(new Error('No active workers available'));
       }
-
-      // Seleção simples (round-robin implícito ou aleatório)
       const workerIndex = randomInt(availableWorkers.length);
       const selectedWorker = availableWorkers[workerIndex];
       const taskId = `${queue}-${
         originalMessage.fields.deliveryTag
       }-${Date.now()}-${randomInt(1000)}`;
 
+      // !! MUDANÇA AQUI: Enviar apenas o PAYLOAD para o worker !!
+      // Verificar se messageContent tem a estrutura esperada
+      let payloadToSend = messageContent; // Default se não tiver .payload
+      if (
+        messageContent &&
+        typeof messageContent === 'object' &&
+        messageContent.hasOwnProperty('payload')
+      ) {
+        payloadToSend = messageContent.payload;
+        console.log(
+          `>>> [Orchestrator] Extracted payload to send for task ${taskId}.`,
+        );
+      } else {
+        console.warn(
+          `>>> [Orchestrator] Message content for task ${taskId} does not have a 'payload' property. Sending content as is.`,
+        );
+      }
+
       const taskPayload: TaskPayload = {
         taskId,
         handlerKey,
-        messageContent,
+        messageContent: payloadToSend, // Enviar o payload extraído (ou o conteúdo original)
       };
 
-      // Guardar a mensagem original para ack/nack futuro
       this.pendingTasks.set(taskId, {
         msg: originalMessage,
         worker: selectedWorker,
         resolve,
         reject,
       });
-
-      this.logger.debug(
-        `Delegating task ${taskId} (queue: ${queue}, handler: ${handlerKey}) to worker ${selectedWorker.process.pid}`,
+      console.log(
+        `>>> [Orchestrator] Prepared task ${taskId}. Attempting to send to worker ${selectedWorker.process.pid}.`,
       );
 
       selectedWorker.send(taskPayload, error => {
         if (error) {
+          console.error(
+            `>>> [Orchestrator] FAILED to send task ${taskId} to worker ${selectedWorker.process.pid}: ${error.message}`,
+          );
           this.logger.error(
-            `Failed to send task ${taskId} to worker ${selectedWorker.process.pid}: ${error.message}`,
+            `[Orchestrator] Failed to send task ${taskId}: ${error.message}`,
             error.stack,
           );
-          // Se falhou ao enviar, remover task pendente e rejeitar a promessa (causará NACK no handler)
           this.pendingTasks.delete(taskId);
           reject(new Error(`Failed to send task to worker: ${error.message}`));
         } else {
-          // Envio bem sucedido, a promessa resolverá/rejeitará quando o worker responder
-          this.logger.verbose(
-            `Task ${taskId} sent successfully to worker ${selectedWorker.process.pid}`,
+          console.log(
+            `>>> [Orchestrator] SUCCESSFULLY sent task ${taskId} to worker ${selectedWorker.process.pid}.`,
           );
-          // O resolve original da Promise é chamado pelo message handler do worker
+          // A promessa AGORA resolve, indicando que o envio foi bem-sucedido.
+          // O resultado real da tarefa virá pela mensagem do worker.
+          resolve();
         }
       });
-
-      // Implementar timeout para tasks? Opcional.
-      // setTimeout(() => {
-      //   if (this.pendingTasks.has(taskId)) {
-      //     const taskInfo = this.pendingTasks.get(taskId);
-      //     this.logger.warn(`Task ${taskId} timed out waiting for worker ${taskInfo?.worker.process.pid}. NACKing.`);
-      //     try {
-      //         this.rabbitMQService.nack(originalMessage, false, false);
-      //     } catch (nackError) {
-      //         this.logger.error(`Error NACKing timed out task ${taskId}: ${nackError.message}`);
-      //     }
-      //     taskInfo?.reject(new Error(`Task ${taskId} timed out`));
-      //     this.pendingTasks.delete(taskId);
-      //   }
-      // }, 60000); // Timeout de 60 segundos
     });
   }
 }

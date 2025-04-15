@@ -28,20 +28,16 @@ export class ConfirmTransactionHandler {
   ) {}
 
   async handleConfirmTransactionCommand(
-    msg: string, // Manter como string por enquanto devido ao JSON.parse
+    message: ConfirmTransactionMessage,
   ): Promise<void> {
     const handlerName = 'ConfirmTransactionHandler';
     const startTime = Date.now();
 
-    let message: ConfirmTransactionMessage;
-    try {
-      message = JSON.parse(msg) as ConfirmTransactionMessage;
-    } catch (parseError) {
+    if (!message || !message.payload || typeof message.payload !== 'object') {
       this.loggingService.error(
-        `[${handlerName}] Falha ao parsear mensagem JSON. Descartando.`,
-        { error: parseError.message, originalMessage: msg },
+        `[${handlerName}] Invalid message structure received.`,
+        { message },
       );
-      // Mensagem inválida, não podemos processar. Retornar para Ack.
       return;
     }
 

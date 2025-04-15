@@ -33,11 +33,19 @@ import { WithdrawalSaga } from './sagas/withdrawal.saga';
 import { TransactionContextService } from './services/transaction-context.service';
 
 import { CheckAccountBalanceHandler } from './commands/handlers/check-account-balance.handler';
+import { ConfirmTransactionHandler } from './commands/handlers/confirm-transaction.handler';
+import { NotifyUserHandler } from './commands/handlers/notify-user.handler';
 import { ProcessTransactionHandler } from './commands/handlers/process-transaction.handler';
+import { ReleaseBalanceHandler } from './commands/handlers/release-balance.handler';
 import { ReserveBalanceHandler } from './commands/handlers/reserve-balance.handler';
+import { UpdateAccountStatementHandler } from './commands/handlers/update-account-statement.handler';
 import { WithdrawalHandler } from './commands/handlers/withdrawal.handler';
 
-const AllCommandHandlers = [CreateTransactionHandler, ...SagaCommandHandlers];
+const AllCommandHandlers = [
+  CreateTransactionHandler,
+  WithdrawalHandler,
+  ...SagaCommandHandlers,
+];
 
 const AllQueryHandlers = [
   GetTransactionHandler,
@@ -78,11 +86,31 @@ const cluster = require('node:cluster'); // Importar cluster aqui também
     TransactionContextService,
     RabbitMQWorkerService,
     ...AllCommandHandlers,
+    WithdrawalHandler,
+    CheckAccountBalanceHandler,
+    ReserveBalanceHandler,
+    ProcessTransactionHandler,
+    ConfirmTransactionHandler,
+    UpdateAccountStatementHandler,
+    NotifyUserHandler,
+    ReleaseBalanceHandler,
     ...EventHandlers,
     ...AllQueryHandlers,
     ...AllSagas,
     ...AllAggregates,
     ...AllRepositories,
+  ],
+  exports: [
+    CqrsModule,
+    ...AllCommandHandlers,
+    WithdrawalHandler,
+    CheckAccountBalanceHandler,
+    ReserveBalanceHandler,
+    ProcessTransactionHandler,
+    ConfirmTransactionHandler,
+    UpdateAccountStatementHandler,
+    NotifyUserHandler,
+    ReleaseBalanceHandler,
   ],
 })
 export class TransactionsModule implements OnModuleInit {

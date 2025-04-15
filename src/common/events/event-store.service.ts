@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { EventsHandler, IEventHandler } from '@nestjs/cqrs';
+import { EventBus, EventsHandler, IEventHandler } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -162,6 +162,7 @@ export class EventStoreService
     @InjectRepository(EventEntity)
     private eventRepository: Repository<EventEntity>,
     private eventDeduplicationService: EventDeduplicationService,
+    private eventBus: EventBus,
   ) {
     // Inicializa o mapa de estratégias
     this.strategyMap = new Map<Function, EventHandlingStrategy>([
@@ -328,6 +329,10 @@ export class EventStoreService
         `[EventStoreService] Event ${type} SAVED for ${eventSpecificId} (DB ID: ${savedEvent.id})`,
         { eventKey: duplicateCheckKey },
       );
+
+      // Publicar o evento no EventBus após salvá-lo
+      this.eventBus.publish(data);
+
       return savedEvent;
     } catch (error) {
       // Limpar a intenção de processamento em caso de erro

@@ -221,26 +221,51 @@ export class WithdrawalSaga {
   balanceChecked = (events$: Observable<any>): Observable<void> => {
     return events$.pipe(
       ofType(BalanceCheckedEvent),
-      filter((event: BalanceCheckedEvent) => {
-        // Filtrar eventos duplicados
-        return !this.hasProcessedEvent(
-          'BalanceCheckedEvent',
-          event.transactionId,
-        );
-      }),
       mergeMap(async (event: BalanceCheckedEvent) => {
+        const { transactionId } = event;
+
+        // Verificar se a transação existe antes de prosseguir
+        const transaction = await this.transactionRepository.findOne({
+          where: { id: transactionId },
+        });
+
+        if (!transaction) {
+          this.loggingService.error(
+            `[WithdrawalSaga] Transaction ${transactionId} not found during balance check. Waiting for creation...`,
+          );
+
+          // Aguardar a criação da transação
+          await new Promise<void>(resolve => {
+            const checkTransaction = async () => {
+              const tx = await this.transactionRepository.findOne({
+                where: { id: transactionId },
+              });
+              if (tx) {
+                resolve();
+              } else {
+                setTimeout(checkTransaction, 100); // Tentar novamente em 100ms
+              }
+            };
+            checkTransaction();
+          });
+        }
+
+        if (this.hasProcessedEvent('BalanceCheckedEvent', transactionId)) {
+          return;
+        }
+
         this.loggingService.info(
-          `[WithdrawalSaga] Handling BalanceCheckedEvent for ${event.transactionId}`,
+          `[WithdrawalSaga] Handling BalanceCheckedEvent for ${transactionId}`,
           { sufficient: event.isBalanceSufficient },
         );
 
         if (!event.isBalanceSufficient) {
           const reason = 'Insufficient balance';
           this.loggingService.error(
-            `[WithdrawalSaga] ${reason} for transaction ${event.transactionId}`,
+            `[WithdrawalSaga] ${reason} for transaction ${transactionId}`,
           );
           await this.updateTransactionStatus(
-            event.transactionId,
+            transactionId,
             TransactionStatus.FAILED,
             reason,
           );
@@ -250,7 +275,7 @@ export class WithdrawalSaga {
         const reserveBalancePayload = {
           commandName: 'ReserveBalanceCommand',
           payload: {
-            transactionId: event.transactionId,
+            transactionId: transactionId,
             accountId: event.accountId,
             amount: event.amount,
           },
@@ -260,7 +285,7 @@ export class WithdrawalSaga {
           reserveBalancePayload,
         );
         this.loggingService.info(
-          `[WithdrawalSaga] Published ReserveBalanceCommand for ${event.transactionId}`,
+          `[WithdrawalSaga] Published ReserveBalanceCommand for ${transactionId}`,
         );
       }),
       catchError((error, caught) => {

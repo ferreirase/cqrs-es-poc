@@ -25,11 +25,33 @@ export class ReserveBalanceHandler {
     const handlerName = 'ReserveBalanceHandler';
     const startTime = Date.now();
 
-    const queueMessage = JSON.parse(
-      msg as unknown as string,
-    ) as ReserveBalanceMessage;
+    // Adicionar verificação robusta da estrutura da mensagem recebida
+    if (
+      !msg ||
+      typeof msg !== 'object' ||
+      !msg.payload ||
+      typeof msg.payload !== 'object'
+    ) {
+      this.loggingService.error(
+        `[${handlerName}] Received invalid message structure. Missing or invalid payload.`,
+        { receivedMessage: msg },
+      );
+      throw new Error(
+        'Invalid message structure received by ReserveBalanceHandler',
+      );
+    }
 
-    const { transactionId, accountId, amount } = queueMessage.payload;
+    // Desestruturar diretamente do payload de 'msg'
+    const { transactionId, accountId, amount } = msg.payload;
+
+    // Verificar campos do payload
+    if (!transactionId || !accountId || amount === undefined) {
+      this.loggingService.error(
+        `[${handlerName}] Invalid payload content received.`,
+        { payload: msg.payload },
+      );
+      throw new Error('Invalid payload content for ReserveBalanceCommand');
+    }
 
     this.loggingService.logHandlerStart(handlerName, {
       transactionId,
@@ -76,7 +98,7 @@ export class ReserveBalanceHandler {
           accountId,
           amount,
           error: error.stack,
-          payload: queueMessage.payload,
+          payload: msg.payload,
         },
       );
 

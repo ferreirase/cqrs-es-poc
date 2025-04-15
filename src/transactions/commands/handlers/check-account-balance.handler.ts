@@ -7,8 +7,8 @@ import { AccountEntity } from '../../../accounts/models/account.entity';
 import { LoggingService } from '../../../common/monitoring/logging.service';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 
-// Define the expected message structure
-interface CheckBalanceMessage {
+// Restaurar a interface original da mensagem completa
+interface CheckBalanceQueueMessage {
   commandName: 'CheckAccountBalanceCommand';
   payload: {
     transactionId: string;
@@ -34,37 +34,41 @@ export class CheckAccountBalanceHandler {
     queue: 'check_balance_commands_queue',
     queueOptions: { durable: true },
   })
-  async handleCheckBalanceCommand(msg: string): Promise<void> {
+  // Voltar a esperar a mensagem completa
+  async handleCheckBalanceCommand(
+    queueMessage: CheckBalanceQueueMessage,
+  ): Promise<void> {
     const handlerName = 'CheckAccountBalanceHandler';
     const startTime = Date.now();
 
-    const { payload } = JSON.parse(msg) as CheckBalanceMessage;
-
-    console.log('payload aqui: ', payload);
-
-    // Extrair dados diretamente do payload recebido
-    const { transactionId, accountId, amount } = payload;
-
-    // Adicionar log para verificar o ID recebido
-    this.loggingService.info(`[${handlerName}] Recebido comando`, {
-      transactionId,
-      accountId,
-      amount,
-    });
-
-    // Verificar se o transactionId é undefined
+    // Desestruturar o payload de dentro da mensagem recebida
+    // Adicionar verificação robusta (similar ao WithdrawalHandler)
     if (
-      typeof transactionId === 'undefined' ||
-      transactionId === null ||
-      transactionId === 'undefined'
+      !queueMessage ||
+      typeof queueMessage !== 'object' ||
+      !queueMessage.payload ||
+      typeof queueMessage.payload !== 'object'
     ) {
       this.loggingService.error(
-        `[${handlerName}] Erro Crítico: transactionId recebido como undefined/null. Abortando.`,
-        { payload },
+        `[${handlerName}] Received invalid message structure. Missing or invalid payload.`,
+        { queueMessage },
       );
-      // Poderia lançar um erro aqui para Nack, mas vamos apenas logar por enquanto
-      // throw new Error('Received undefined transactionId');
-      return; // Interrompe o processamento
+      throw new Error(
+        'Invalid message structure received by CheckAccountBalanceHandler',
+      );
+    }
+    const { payload } = queueMessage;
+
+    // Desestruturar do payload
+    const { transactionId, accountId, amount } = payload;
+
+    // Verificar se os campos existem no payload
+    if (!transactionId || !accountId || amount === undefined) {
+      this.loggingService.error(
+        `[${handlerName}] Invalid payload content received.`,
+        { payload }, // Logar o payload interno
+      );
+      throw new Error('Invalid payload content for CheckAccountBalanceCommand');
     }
 
     this.loggingService.logHandlerStart(handlerName, {

@@ -17,6 +17,22 @@ export class RabbitMQService implements OnModuleInit {
   ) {}
 
   /**
+   * Retorna o status da conexão AMQP.
+   */
+  public get isConnected(): boolean {
+    // Acessa a conexão injetada pela biblioteca @golevelup
+    // Pode ser necessário ajustar dependendo da versão exata e API
+    try {
+      return this.amqpConnection?.managedConnection?.isConnected() ?? false;
+    } catch (e) {
+      this.logger.warn(
+        `Error checking RabbitMQ connection status: ${e.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Configura o prefetch count globalmente quando o módulo iniciar
    */
   async onModuleInit() {

@@ -41,7 +41,9 @@ export class TransactionCreatedHandler
 
     try {
       // Verifica se a transação já existe para evitar duplicação
-      const existingTransaction = await this.transactionModel.findOne({ id });
+      const existingTransaction = await this.transactionRepository.findOne({
+        where: { id },
+      });
 
       if (existingTransaction) {
         this.loggingService.warn(
@@ -50,7 +52,8 @@ export class TransactionCreatedHandler
         return;
       }
 
-      await this.transactionRepository.save({
+      // Criar a transação no banco de dados relacional primeiro
+      const transaction = await this.transactionRepository.save({
         id,
         sourceAccountId,
         destinationAccountId,
@@ -59,8 +62,14 @@ export class TransactionCreatedHandler
         status: TransactionStatus.PENDING,
         description,
         createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
+      this.loggingService.info(
+        `[TransactionCreatedHandler] Transaction created in relational database: ${id}`,
+      );
+
+      // Criar a transação no MongoDB
       await this.transactionModel.create({
         id,
         sourceAccountId,
@@ -70,14 +79,17 @@ export class TransactionCreatedHandler
         status: TransactionStatus.PENDING,
         description,
         createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       this.loggingService.info(
-        `[TransactionCreatedHandler] Transaction read model created: ${id}`,
+        `[TransactionCreatedHandler] Transaction read model created in MongoDB: ${id}`,
       );
+
+      return transaction;
     } catch (error) {
       this.loggingService.error(
-        `[TransactionCreatedHandler] Error creating transaction read model: ${error.message}`,
+        `[TransactionCreatedHandler] Error creating transaction: ${error.message}`,
         { error, stackTrace: error.stack },
       );
       throw error;

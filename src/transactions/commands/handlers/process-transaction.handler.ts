@@ -41,11 +41,32 @@ export class ProcessTransactionHandler {
     const handlerName = 'ProcessTransactionHandler';
     const startTime = Date.now();
 
-    const queueMessage = JSON.parse(
-      msg as unknown as string,
-    ) as ProcessTransactionMessage;
+    if (
+      !msg ||
+      typeof msg !== 'object' ||
+      !msg.payload ||
+      typeof msg.payload !== 'object'
+    ) {
+      this.loggingService.error(
+        `[${handlerName}] Received invalid message structure. Missing or invalid payload.`,
+        { receivedMessage: msg },
+      );
+      throw new Error(
+        'Invalid message structure received by ProcessTransactionHandler',
+      );
+    }
 
-    const { transactionId } = queueMessage.payload;
+    const { transactionId } = msg.payload;
+
+    if (!transactionId) {
+      this.loggingService.error(
+        `[${handlerName}] Invalid payload content received. Missing transactionId.`,
+        { payload: msg.payload },
+      );
+      throw new Error(
+        'Invalid payload content for ProcessTransactionCommand: Missing transactionId',
+      );
+    }
 
     this.loggingService.logHandlerStart(handlerName, { transactionId });
 
@@ -56,14 +77,12 @@ export class ProcessTransactionHandler {
     let description: string;
     let transactionType: TransactionType;
 
-    // Keep TypeORM transaction logic here for atomic account updates
     const queryRunner =
       this.accountRepository.manager.connection.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 1. Fetch transaction details needed for processing
       transactionDetails = await queryRunner.manager.findOne(
         TransactionEntity,
         {
@@ -72,12 +91,25 @@ export class ProcessTransactionHandler {
       );
 
       if (!transactionDetails) {
-        throw new NotFoundException(
-          `Transaction details not found for ID: ${transactionId}`,
-        );
+        let retries = 3;
+        while (retries > 0 && !transactionDetails) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          transactionDetails = await queryRunner.manager.findOne(
+            TransactionEntity,
+            {
+              where: { id: transactionId },
+            },
+          );
+          retries--;
+        }
+
+        if (!transactionDetails) {
+          throw new NotFoundException(
+            `Transaction details not found for ID: ${transactionId} after retries`,
+          );
+        }
       }
 
-      // Assign details to variables
       sourceAccountId = transactionDetails.sourceAccountId;
       destinationAccountId = transactionDetails.destinationAccountId;
       amount = transactionDetails.amount;
@@ -94,7 +126,6 @@ export class ProcessTransactionHandler {
         },
       );
 
-      // 2. Lock and verify source and destination accounts
       const sourceAccount = await queryRunner.manager
         .getRepository(AccountEntity)
         .findOne({
@@ -108,7 +139,6 @@ export class ProcessTransactionHandler {
         );
       }
 
-      // Check for destination account only if it exists (pure withdrawal might not have one)
       let destinationAccount: AccountEntity | null = null;
       if (destinationAccountId) {
         destinationAccount = await queryRunner.manager
@@ -125,20 +155,17 @@ export class ProcessTransactionHandler {
         }
       }
 
-      // Verify source account balance
       if (Number(sourceAccount.balance) < Number(amount)) {
         throw new Error(
           `Insufficient balance in source account ${sourceAccountId}`,
         );
       }
 
-      // Store previous balances for events
       const sourcePreviousBalance = sourceAccount.balance;
       const destPreviousBalance = destinationAccount
         ? destinationAccount.balance
         : null;
 
-      // 3. Update account balances
       sourceAccount.balance = Number(sourceAccount.balance) - Number(amount);
       sourceAccount.updatedAt = new Date();
       await queryRunner.manager.save(sourceAccount);
@@ -150,18 +177,15 @@ export class ProcessTransactionHandler {
         await queryRunner.manager.save(destinationAccount);
       }
 
-      // 4. Load the transaction aggregate
       const transactionAggregate =
         await this.transactionAggregateRepository.findById(transactionId);
 
       if (!transactionAggregate) {
-        // If aggregate doesn't exist here, it's a major issue
         throw new NotFoundException(
           `CRITICAL: Transaction aggregate not found for ID ${transactionId} during processing.`,
         );
       }
 
-      // 5. Apply the processTransaction event to the aggregate
       transactionAggregate.processTransaction(
         transactionId,
         sourceAccountId,
@@ -173,17 +197,14 @@ export class ProcessTransactionHandler {
         transactionType,
       );
 
-      // 6. Save aggregate (publishes TransactionProcessedEvent)
       await this.transactionAggregateRepository.save(transactionAggregate);
 
       this.loggingService.info(
         `[${handlerName}] Transaction aggregate ${transactionId} status updated to PROCESSED`,
       );
 
-      // 7. Commit the database transaction (account updates)
       await queryRunner.commitTransaction();
 
-      // 8. Publish account balance update events (consider moving to listeners)
       this.eventBus.publish(
         new AccountBalanceUpdatedEvent(
           sourceAccountId,
@@ -212,7 +233,6 @@ export class ProcessTransactionHandler {
         { operation: 'transaction_processed_and_committed' },
       );
     } catch (error) {
-      // Rollback database transaction on any error
       await queryRunner.rollbackTransaction();
 
       const executionTime = (Date.now() - startTime) / 1000;
@@ -224,17 +244,15 @@ export class ProcessTransactionHandler {
           destinationAccountId,
           amount,
           error: error.stack,
-          payload: queueMessage.payload,
+          payload: msg.payload,
         },
       );
 
-      // Attempt to load aggregate and record failure event
       try {
         const transactionAggregate =
           await this.transactionAggregateRepository.findById(transactionId);
 
         if (transactionAggregate) {
-          // Ensure we have necessary details for the failure event
           const finalSource =
             sourceAccountId || transactionDetails?.sourceAccountId;
           const finalDest =
@@ -262,13 +280,6 @@ export class ProcessTransactionHandler {
               transactionAggregate,
             );
 
-            // Publish explicit failure event (optional, aggregate save already does)
-            /*
-               const failedEvent = new TransactionProcessedEvent(
-                transactionId, finalSource, finalDest, finalAmount, false, finalDesc, TransactionStatus.FAILED, finalType, error.message
-               );
-               this.eventBus.publish(failedEvent);
-               */
             this.loggingService.warn(
               `[${handlerName}] Recorded transaction processing failure in aggregate for ${transactionId}.`,
             );

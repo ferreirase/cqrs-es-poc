@@ -27,6 +27,7 @@ import {
 
 @Module({
   imports: [
+    CqrsModule,
     WorkersModule,
     WorkerModule.forRoot(),
     RabbitMQModule,
@@ -58,7 +59,6 @@ import {
         uri: mongoUri(configService),
       }),
     }),
-    CqrsModule,
     EventsModule,
     AccountsModule,
     TransactionsModule,

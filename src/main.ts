@@ -9,6 +9,15 @@ import { availableParallelism } from 'node:os';
 import process from 'node:process';
 import { AppModule } from './app.module';
 import { RabbitMQOrchestratorService } from './common/messaging/rabbitmq-orchestrator.service';
+import { CheckAccountBalanceHandler } from './transactions/commands/handlers/check-account-balance.handler';
+import { ConfirmTransactionHandler } from './transactions/commands/handlers/confirm-transaction.handler';
+import { NotifyUserHandler } from './transactions/commands/handlers/notify-user.handler';
+import { ProcessTransactionHandler } from './transactions/commands/handlers/process-transaction.handler';
+import { ReleaseBalanceHandler } from './transactions/commands/handlers/release-balance.handler';
+import { ReserveBalanceHandler } from './transactions/commands/handlers/reserve-balance.handler';
+import { UpdateAccountStatementHandler } from './transactions/commands/handlers/update-account-statement.handler';
+import { WithdrawalHandler } from './transactions/commands/handlers/withdrawal.handler';
+import { TransactionsModule } from './transactions/transactions.module';
 
 // Interfaces para comunicação IPC
 interface TaskPayload {
@@ -23,9 +32,19 @@ interface TaskResult {
   error?: string;
 }
 
-// Mapeamento de handlerKey para método (poderia ser mais robusto)
-// Assumindo que os handlers de comando têm um método padrão, ex: handleCommand
-// ou mapear explicitamente: handlerKey -> classe -> método
+// Mapa de handlerKey (string) para a CLASSE do handler
+const handlerClassMap = {
+  WithdrawalHandler,
+  CheckAccountBalanceHandler,
+  ReserveBalanceHandler,
+  ProcessTransactionHandler,
+  ConfirmTransactionHandler,
+  UpdateAccountStatementHandler,
+  NotifyUserHandler,
+  ReleaseBalanceHandler,
+};
+
+// Mapa de handlerKey (string) para o NOME DO MÉTODO a ser chamado
 const handlerMethodMap = {
   WithdrawalHandler: 'consumeWithdrawalCommand',
   CheckAccountBalanceHandler: 'handleCheckBalanceCommand',
@@ -71,27 +90,25 @@ async function bootstrapWorker(): Promise<INestApplicationContext> {
 }
 
 async function bootstrapPrimary() {
-  // Cria uma instância do app sem iniciar o servidor HTTP, apenas para DI
+  console.log('>>> [Primary] Entering bootstrapPrimary function.');
   const app = await NestFactory.createApplicationContext(AppModule);
-  Logger.log('[Primary] Application context created.');
-
-  // Obter o serviço orquestrador e inicializá-lo
+  console.log('>>> [Primary] Application context created.');
   const orchestrator = app.get(RabbitMQOrchestratorService);
   if (!orchestrator) {
-    Logger.error(
-      '[Primary] Failed to get RabbitMQOrchestratorService instance!',
+    console.error(
+      '>>> [Primary] CRITICAL: Failed to get RabbitMQOrchestratorService instance!',
     );
     process.exit(1);
   }
-  // O onApplicationBootstrap do orchestrator será chamado automaticamente pela inicialização do contexto
-  Logger.log('[Primary] RabbitMQOrchestratorService should be initializing...');
-
-  // Opcional: Fechar o contexto após um tempo ou evento se ele não for mais necessário?
-  // await app.close();
+  console.log(
+    '>>> [Primary] Orchestrator instance obtained. Initialization should follow.',
+  );
 }
 
 if (cluster.isPrimary) {
+  console.log('>>> Starting Primary Process...');
   const numCPUs = availableParallelism();
+  console.log(`>>> [Primary] Starting ${numCPUs} workers...`);
 
   Logger.log(
     `Primary ${process.pid} is running, starting ${numCPUs} workers...`,
@@ -99,10 +116,7 @@ if (cluster.isPrimary) {
 
   // Inicializar o orquestrador no primário
   bootstrapPrimary().catch(err => {
-    Logger.error(
-      `[Primary] Failed to initialize orchestrator: ${err.message}`,
-      err.stack,
-    );
+    console.error(`>>> [Primary] Bootstrap failed: ${err.message}`, err.stack);
     process.exit(1);
   });
 
@@ -119,95 +133,138 @@ if (cluster.isPrimary) {
     cluster.fork(); // Fork a new worker when one dies
   });
 } else {
-  // Worker process
+  console.log(`>>> Starting Worker Process ${process.pid}...`);
   Logger.log(`Worker ${process.pid} starting...`);
 
   bootstrapWorker()
-    .then(appInstance => {
-      Logger.log(`Worker ${process.pid} bootstrapped and listening for tasks.`);
+    .then(async appInstance => {
+      Logger.log(`Worker ${process.pid} bootstrapped.`);
+      console.log(
+        `>>> [Worker ${process.pid}] Bootstrap complete. IPC listener setup.`,
+      );
 
+      // Não precisa mais pré-buscar o WithdrawalHandler aqui, faremos sob demanda
+
+      console.log(`>>> [Worker ${process.pid}] Setting up IPC listener.`);
       process.on('message', async (task: TaskPayload) => {
+        console.log(
+          `>>> [Worker ${process.pid}] IPC message received. Task ID: ${task.taskId}, Handler Key: ${task.handlerKey}`,
+        );
+
+        let messageData = task.messageContent;
+        if (typeof messageData === 'string') {
+          try {
+            messageData = JSON.parse(messageData);
+          } catch (parseError) {
+            console.error(
+              `>>> [Worker ${process.pid}] FAILED to parse message content string: ${parseError.message}`,
+            );
+            Logger.error(
+              `[Worker ${process.pid}] Error parsing IPC message content: ${parseError.message}`,
+              parseError.stack,
+              { originalContent: task.messageContent },
+            );
+            // Enviar falha de volta? Ou apenas logar e falhar a execução?
+            // Por agora, vamos deixar a execução falhar abaixo.
+          }
+        }
+
         Logger.debug(
-          `Worker ${process.pid} received task: ${task.taskId} for handler ${task.handlerKey}`,
+          `[Worker ${process.pid}] Parsed/Final task content:`,
+          messageData,
         );
 
         let result: TaskResult;
+        let handlerInstance: any;
         try {
-          // Encontrar o nome do método baseado no handlerKey
+          const HandlerClass = handlerClassMap[task.handlerKey];
           const methodName = handlerMethodMap[task.handlerKey];
+
+          if (!HandlerClass) {
+            throw new Error(
+              `No Handler CLASS mapped for handler key: ${task.handlerKey}`,
+            );
+          }
           if (!methodName) {
             throw new Error(
-              `No method mapped for handler key: ${task.handlerKey}`,
+              `No Handler METHOD mapped for handler key: ${task.handlerKey}`,
             );
           }
 
-          // Obter a instância do handler do container DI do worker
-          // Precisamos importar os tipos dos handlers ou usar appInstance.get<any>(...) com string
-          const handlerInstance = appInstance.get(task.handlerKey);
+          // Obter a instância do handler SEMPRE via TransactionsModule
+          try {
+            const transactionsModuleRef =
+              appInstance.select(TransactionsModule);
+            handlerInstance = transactionsModuleRef.get(HandlerClass, {
+              strict: false,
+            });
+            console.log(
+              `>>> [Worker ${process.pid}] Successfully got instance for ${task.handlerKey} via module.`,
+            );
+          } catch (moduleGetError) {
+            console.error(
+              `>>> [Worker ${process.pid}] CRITICAL: Failed to get ${task.handlerKey} instance via module: ${moduleGetError.message}`,
+              moduleGetError.stack,
+            );
+            // Se não conseguir obter via módulo, é um erro fatal de configuração
+            throw new Error(
+              `Failed to resolve ${task.handlerKey} from TransactionsModule: ${moduleGetError.message}`,
+            );
+          }
+
           if (
             !handlerInstance ||
             typeof handlerInstance[methodName] !== 'function'
           ) {
+            // Este erro agora é menos provável, mas mantido como segurança
             throw new Error(
-              `Handler instance or method ${task.handlerKey}.${methodName} not found in worker DI container.`,
+              `Handler instance obtained, but method ${task.handlerKey}.${methodName} not found or not a function.`,
             );
           }
 
-          // Executar o handler
-          await handlerInstance[methodName](task.messageContent);
+          Logger.log(
+            `[Worker ${process.pid}] Invoking ${task.handlerKey}.${methodName} for task ${task.taskId}`,
+          );
+          await handlerInstance[methodName](messageData);
 
+          // Se chegou aqui, sucesso
           result = { taskId: task.taskId, success: true };
-          Logger.debug(
-            `Worker ${process.pid} completed task ${task.taskId} successfully.`,
+          console.log(
+            `>>> [Worker ${process.pid}] Task ${task.taskId} completed successfully.`,
           );
         } catch (error) {
           Logger.error(
-            `Worker ${process.pid} failed task ${task.taskId}: ${error.message}`,
+            `[Worker ${process.pid}] Error processing task ${task.taskId} (${task.handlerKey}): ${error.message}`,
             error.stack,
+            { messageData },
           );
           result = {
             taskId: task.taskId,
             success: false,
             error: error.message,
           };
+          console.error(
+            `>>> [Worker ${process.pid}] Task ${task.taskId} FAILED: ${error.message}`,
+          );
         }
 
         // Enviar resultado de volta para o processo primário
-        if (process.send) {
-          // Verificar se send existe (pode não existir em alguns cenários)
-          process.send(result);
-        } else {
-          Logger.error(
-            `Worker ${process.pid} cannot send result for task ${task.taskId}: process.send is undefined.`,
-          );
-        }
+        process.send(result);
       });
 
-      process.on('uncaughtException', err => {
-        Logger.error(
-          `[Worker ${process.pid}] Uncaught Exception: ${err.message}`,
-          err.stack,
+      // Sinalizar que o worker está pronto
+      if (process.send) {
+        process.send({ status: 'ready', pid: process.pid });
+        console.log(
+          `>>> [Worker ${process.pid}] Sent ready signal to primary.`,
         );
-        // Considerar sair do processo worker para ser reiniciado pelo primário
-        process.exit(1);
-      });
-
-      process.on('unhandledRejection', (reason, promise) => {
-        Logger.error(
-          `[Worker ${process.pid}] Unhandled Rejection at:`,
-          promise,
-          'reason:',
-          reason,
-        );
-        // Considerar sair do processo worker
-        process.exit(1);
-      });
+      }
     })
     .catch(err => {
       Logger.error(
-        `[Worker ${process.pid}] Failed to bootstrap: ${err.message}`,
+        `Worker ${process.pid} failed to bootstrap: ${err.message}`,
         err.stack,
       );
-      process.exit(1); // Sair se o bootstrap falhar
+      process.exit(1);
     });
 }

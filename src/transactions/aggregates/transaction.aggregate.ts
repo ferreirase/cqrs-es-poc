@@ -355,76 +355,82 @@ export class TransactionAggregate extends AggregateRoot {
     this._description = event.description;
     this._status = TransactionStatus.PENDING;
     this._createdAt = new Date();
-  }
-
-  // Quando um saldo é verificado
-  onBalanceCheckedEvent(event: BalanceCheckedEvent) {
-    // Este evento não altera o estado do agregado, mas é importante registrá-lo
-    // para manter a sequência de eventos consistente
     this._updatedAt = new Date();
-
-    // Se o saldo for insuficiente, marcar a transação como falha
-    if (!event.isBalanceSufficient) {
-      this._status = TransactionStatus.FAILED;
-      this._error = 'Insufficient balance';
-    }
   }
 
-  // Quando um saldo é reservado
+  // Handler para o evento BalanceCheckedEvent
+  onBalanceCheckedEvent(event: BalanceCheckedEvent) {
+    this._id = event.transactionId;
+    this._sourceAccountId = event.accountId;
+    this._amount = event.amount;
+    this._status = event.isBalanceSufficient
+      ? TransactionStatus.PENDING
+      : TransactionStatus.FAILED;
+    this._error = event.isBalanceSufficient ? null : 'Insufficient balance';
+    this._updatedAt = new Date();
+  }
+
+  // Handler para o evento BalanceReservedEvent
   onBalanceReservedEvent(event: BalanceReservedEvent) {
-    if (event.success) {
-      this._status = TransactionStatus.RESERVED;
-    } else {
-      this._status = TransactionStatus.FAILED;
-      this._error = 'Failed to reserve balance';
-    }
+    this._id = event.transactionId;
+    this._sourceAccountId = event.accountId;
+    this._amount = event.amount;
+    this._status = event.success
+      ? TransactionStatus.RESERVED
+      : TransactionStatus.FAILED;
+    this._error = event.success ? null : 'Failed to reserve balance';
     this._updatedAt = new Date();
   }
 
   // Quando uma transação é processada
   onTransactionProcessedEvent(event: TransactionProcessedEvent) {
-    this._destinationAccountId = event.destinationAccountId;
-    this._status = event.status as TransactionStatus;
-    this._description = event.description;
-    this._processedAt = new Date();
-    this._updatedAt = new Date();
+    if (this._id !== event.transactionId) return;
 
-    if (!event.success) {
-      this._error = event.error || 'Transaction processing failed';
+    if (event.success) {
+      this._status = TransactionStatus.PROCESSED;
+      this._processedAt = new Date();
+    } else {
+      this._status = TransactionStatus.FAILED;
+      // Idealmente, o evento teria a razão da falha
+      this._error = 'Transaction processing failed';
     }
+    this._updatedAt = new Date();
   }
 
   // Quando uma transação é confirmada
   onTransactionConfirmedEvent(event: TransactionConfirmedEvent) {
-    this._status = event.success
-      ? TransactionStatus.CONFIRMED
-      : TransactionStatus.FAILED;
-    this._error = event.error; // Store error message if confirmation failed
+    if (this._id !== event.transactionId) return;
+
+    if (event.success) {
+      this._status = TransactionStatus.COMPLETED;
+      this._error = null; // Limpar erro em caso de sucesso
+    } else {
+      this._status = TransactionStatus.FAILED;
+      this._error = event.error || 'Transaction confirmation failed';
+    }
     this._updatedAt = new Date();
-    // Note: We don't update source/destination/amount/description here as they were set at creation
-    // The event carries them for downstream consumers (like the saga).
   }
 
   // Quando o saldo reservado é liberado (compensação)
   onBalanceReleasedEvent(event: BalanceReleasedEvent) {
-    // Release typically means the transaction failed after reservation.
-    // We mark as FAILED unless the release itself failed critically.
-    this._status = event.success
-      ? TransactionStatus.FAILED // Compensation succeeded, TX failed
-      : TransactionStatus.FAILED; // Compensation failed, TX also failed (maybe needs specific state?)
+    if (this._id !== event.transactionId) return;
+    // A liberação pode acontecer em caso de falha para reverter a reserva
+    // Atualizamos o status para FAILED ou CANCELLED dependendo da lógica
+    // Se já falhou, manter FAILED.
+    if (this._status !== TransactionStatus.FAILED) {
+      this._status = TransactionStatus.CANCELLED; // Ou FAILED, dependendo do fluxo
+    }
     this._error =
-      event.error || event.reason || 'Balance released due to failure'; // Record reason/error
+      event.reason || 'Balance released due to failure/cancellation';
     this._updatedAt = new Date();
   }
 
   onTransactionStatusUpdatedEvent(event: TransactionStatusUpdatedEvent) {
     this._status = event.status;
     this._updatedAt = new Date();
-    if (event.processedAt) {
-      this._processedAt = event.processedAt;
-    }
-    if (event.error) {
-      this._error = event.error;
-    }
+  }
+
+  onStatementUpdatedEvent(event: StatementUpdatedEvent) {
+    this._updatedAt = new Date();
   }
 }

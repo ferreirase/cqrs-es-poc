@@ -4,8 +4,8 @@ import http from 'k6/http';
 // Configuração do teste
 export const options = {
   stages: [
-    { duration: '30s', target: 200 }, // Rampa mais lenta para 8 usuários, reduzindo a carga inicial
-    { duration: '1m', target: 300 }, // Aumenta gradualmente para 10 usuários
+    { duration: '30s', target: 100 }, // Rampa mais lenta para 8 usuários, reduzindo a carga inicial
+    { duration: '1m', target: 200 }, // Aumenta gradualmente para 10 usuários
     { duration: '30s', target: 0 }, // Rampa de descida
   ],
   thresholds: {

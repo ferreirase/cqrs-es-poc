@@ -188,21 +188,29 @@ export class TransactionAggregateRepository {
       `[TransactionAggregateRepository] Mapping event type: ${eventType}`,
     );
 
+    // Corrigir as chaves para corresponder aos nomes das classes de evento
+    // (sem "Event" no final)
     const eventMap = {
-      created: 'onTransactionCreatedEvent',
-      processed: 'onTransactionProcessedEvent',
-      reserved: 'onBalanceReservedEvent',
-      released: 'onBalanceReleasedEvent',
-      confirmed: 'onTransactionConfirmedEvent',
-      checked: 'onBalanceCheckedEvent',
-      updated: 'onTransactionStatusUpdatedEvent',
+      TransactionCreated: 'onTransactionCreatedEvent',
+      TransactionProcessed: 'onTransactionProcessedEvent',
+      BalanceReserved: 'onBalanceReservedEvent',
+      BalanceReleased: 'onBalanceReleasedEvent',
+      TransactionConfirmed: 'onTransactionConfirmedEvent',
+      BalanceChecked: 'onBalanceCheckedEvent',
+      TransactionStatusUpdated: 'onTransactionStatusUpdatedEvent',
+      StatementUpdated: 'onStatementUpdatedEvent', // Adicionar mapeamento para StatementUpdated
     };
 
-    const handler = eventMap[eventType];
+    // Ajustar a extração da chave para remover "Event" se presente
+    const key = eventType.endsWith('Event')
+      ? eventType.substring(0, eventType.length - 5)
+      : eventType;
+
+    const handler = eventMap[key];
 
     if (!handler) {
       this.loggingService.warn(
-        `[TransactionAggregateRepository] No handler mapping found for event type ${eventType}`,
+        `[TransactionAggregateRepository] No handler mapping found for event key: ${key} (derived from type: ${eventType})`,
       );
     }
 

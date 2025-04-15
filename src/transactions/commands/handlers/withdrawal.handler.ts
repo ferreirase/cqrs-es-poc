@@ -1,12 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { EventStoreService } from '../../../common/events/event-store.service';
 import { RabbitMQService } from '../../../common/messaging/rabbitmq.service';
 import { LoggingService } from '../../../common/monitoring/logging.service';
-import { TransactionAggregate } from '../../aggregates/transaction.aggregate';
-import { TransactionType } from '../../models/transaction.entity';
+import { TransactionCreatedEvent } from '../../events/impl/transaction-created.event';
+import {
+  TransactionEntity,
+  TransactionType,
+} from '../../models/transaction.entity';
 import { TransactionAggregateRepository } from '../../repositories/transaction-aggregate.repository';
 import { TransactionContextService } from '../../services/transaction-context.service';
 
-// Interface para a estrutura da mensagem que esperamos da fila (baseado no Controller)
+// Restaurar a interface original da mensagem completa
 interface WithdrawalQueueMessage {
   commandName: 'WithdrawalCommand';
   payload: {
@@ -25,33 +31,64 @@ export class WithdrawalHandler {
     private readonly loggingService: LoggingService,
     private readonly transactionContextService: TransactionContextService,
     private readonly transactionAggregateRepository: TransactionAggregateRepository,
+    private readonly eventStore: EventStoreService,
+    @InjectRepository(TransactionEntity)
+    private readonly transactionRepository: Repository<TransactionEntity>,
   ) {}
 
-  async consumeWithdrawalCommand(msg: string): Promise<void> {
+  // Voltar a esperar a mensagem completa
+  async consumeWithdrawalCommand(
+    queueMessage: WithdrawalQueueMessage,
+  ): Promise<void> {
     const handlerName = 'WithdrawalHandler';
     const startTime = Date.now();
 
-    const { payload } = JSON.parse(msg) as WithdrawalQueueMessage;
+    // Desestruturar o payload de dentro da mensagem recebida
+    // Adicionar verificação robusta
+    if (
+      !queueMessage ||
+      typeof queueMessage !== 'object' ||
+      !queueMessage.payload ||
+      typeof queueMessage.payload !== 'object'
+    ) {
+      this.loggingService.error(
+        `[${handlerName}] Received invalid message structure. Missing or invalid payload.`,
+        { queueMessage },
+      );
+      throw new Error(
+        'Invalid message structure received by WithdrawalHandler',
+      );
+    }
+    const { payload } = queueMessage;
 
+    // Desestruturar do payload
     const { id, sourceAccountId, destinationAccountId, amount, description } =
       payload;
 
+    // Verificar se o ID existe no payload
+    if (!id) {
+      this.loggingService.error(
+        `[${handlerName}] Missing ID in message payload.`,
+        { payload },
+      );
+      throw new Error('Missing transaction ID in withdrawal command payload');
+    }
     const transactionId = id;
 
+    this.loggingService.logHandlerStart(handlerName, {
+      transactionId,
+      payload: payload,
+    });
+    this.loggingService.info(
+      `[${handlerName}] Received task for transaction ${transactionId}.`,
+    );
+
     try {
-      this.loggingService.logHandlerStart(handlerName, {
-        transactionId,
-        payload,
-      });
-
+      // 1. Criar e salvar o evento de criação PRIMEIRO
       this.loggingService.info(
-        `[${handlerName}] Criando agregado para transação`,
-        { transactionId },
+        `[${handlerName}] Creating and saving TransactionCreatedEvent for ${transactionId}...`,
       );
-
-      const transactionAggregate = new TransactionAggregate();
-
-      transactionAggregate.createTransaction(
+      const creationEvent = new TransactionCreatedEvent(
         transactionId,
         sourceAccountId,
         destinationAccountId,
@@ -59,13 +96,49 @@ export class WithdrawalHandler {
         TransactionType.WITHDRAWAL,
         description,
       );
-
-      await this.transactionAggregateRepository.save(transactionAggregate);
-
+      await this.eventStore.saveEvent(
+        creationEvent.constructor.name,
+        creationEvent,
+        transactionId,
+      );
       this.loggingService.info(
-        `[${handlerName}] Agregado ${transactionId} criado e evento inicial salvo/publicado.`,
+        `[${handlerName}] TransactionCreatedEvent saved for ${transactionId}.`,
       );
 
+      // Aguardar a confirmação de que a transação foi criada
+      let transactionCreated = false;
+      let retries = 10; // 10 tentativas
+      while (!transactionCreated && retries > 0) {
+        const transaction = await this.transactionRepository.findOne({
+          where: { id: transactionId },
+        });
+
+        if (transaction) {
+          transactionCreated = true;
+          this.loggingService.info(
+            `[${handlerName}] Transaction ${transactionId} confirmed as created.`,
+          );
+        } else {
+          retries--;
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 500)); // Esperar 500ms
+            this.loggingService.info(
+              `[${handlerName}] Waiting for transaction ${transactionId} creation... (${retries} retries left)`,
+            );
+          }
+        }
+      }
+
+      if (!transactionCreated) {
+        throw new Error(
+          `Transaction ${transactionId} was not created after multiple retries`,
+        );
+      }
+
+      // 2. Definir contexto inicial (ainda necessário para a Saga)
+      this.loggingService.info(
+        `[${handlerName}] Setting initial context for ${transactionId}...`,
+      );
       await this.transactionContextService.setInitialContext(
         transactionId,
         sourceAccountId,
@@ -75,9 +148,10 @@ export class WithdrawalHandler {
         description,
       );
       this.loggingService.info(
-        `[${handlerName}] Contexto inicial definido para ${transactionId}`,
+        `[${handlerName}] Initial context set for ${transactionId}.`,
       );
 
+      // 3. Publicar próximo comando da saga
       const checkBalancePayload = {
         commandName: 'CheckAccountBalanceCommand',
         payload: {
@@ -87,14 +161,16 @@ export class WithdrawalHandler {
         },
       };
 
+      this.loggingService.info(
+        `[${handlerName}] Publishing CheckAccountBalanceCommand for ${transactionId}...`,
+      );
       await this.rabbitmqService.publishToExchange(
         'commands.check_balance',
         checkBalancePayload,
         { exchangeName: 'paymaker-exchange' },
       );
       this.loggingService.info(
-        `[${handlerName}] Command 'CheckAccountBalanceCommand' publicado`,
-        { transactionId: transactionId },
+        `[${handlerName}] CheckAccountBalanceCommand published for ${transactionId}.`,
       );
 
       const executionTime = (Date.now() - startTime) / 1000;
@@ -102,15 +178,18 @@ export class WithdrawalHandler {
         handlerName,
         { transactionId },
         executionTime,
-        { status: 'AGGREGATE_CREATED_PUBLISHED_NEXT' },
+        { status: 'CREATION_EVENT_SAVED_PUBLISHED_NEXT' },
       );
     } catch (error) {
-      const executionTime = (Date.now() - startTime) / 1000;
       this.loggingService.logCommandError(handlerName, error, {
-        messagePayload: payload,
+        messagePayload: payload, // Logar o payload original
         transactionId,
-        executionTime,
       });
+      this.loggingService.error(
+        `[${handlerName}] FULL ERROR STACK for ${transactionId}:`,
+        error.stack,
+      );
+      throw error;
     }
   }
 }
