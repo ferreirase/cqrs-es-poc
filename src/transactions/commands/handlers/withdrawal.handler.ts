@@ -108,7 +108,7 @@ export class WithdrawalHandler {
       // Aguardar a confirmação de que a transação foi criada
       let transactionCreated = false;
       let retries = 10; // 10 tentativas
-      while (!transactionCreated && retries > 0) {
+      while (retries > 0) {
         const transaction = await this.transactionRepository.findOne({
           where: { id: transactionId },
         });
@@ -118,14 +118,15 @@ export class WithdrawalHandler {
           this.loggingService.info(
             `[${handlerName}] Transaction ${transactionId} confirmed as created.`,
           );
-        } else {
-          retries--;
-          if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 500)); // Esperar 500ms
-            this.loggingService.info(
-              `[${handlerName}] Waiting for transaction ${transactionId} creation... (${retries} retries left)`,
-            );
-          }
+          break;
+        }
+
+        retries--;
+        if (retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Aumentar para 1s
+          this.loggingService.info(
+            `[${handlerName}] Waiting for transaction ${transactionId} creation... (${retries} retries left)`,
+          );
         }
       }
 
@@ -150,6 +151,9 @@ export class WithdrawalHandler {
       this.loggingService.info(
         `[${handlerName}] Initial context set for ${transactionId}.`,
       );
+
+      // Aguardar um pequeno delay adicional para garantir consistência
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // 3. Publicar próximo comando da saga
       const checkBalancePayload = {

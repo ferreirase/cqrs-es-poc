@@ -91,9 +91,9 @@ export class ProcessTransactionHandler {
       );
 
       if (!transactionDetails) {
-        let retries = 3;
+        let retries = 5;
         while (retries > 0 && !transactionDetails) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 1000));
           transactionDetails = await queryRunner.manager.findOne(
             TransactionEntity,
             {
@@ -101,6 +101,10 @@ export class ProcessTransactionHandler {
             },
           );
           retries--;
+
+          this.loggingService.info(
+            `[${handlerName}] Retrying to find transaction ${transactionId}... (${retries} retries left)`,
+          );
         }
 
         if (!transactionDetails) {
